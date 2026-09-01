@@ -46,6 +46,45 @@ out. `test.mjs` enforces that asymmetry: never above truth, never >10% below.
 | `index.html`  | The tracker UI. |
 | `test.mjs`    | Validation suite. |
 | `serve.sh`    | Local server + HTTPS tunnel. |
+| `compare.mjs` | Re-derives a track's gain from 4 terrain datasets and 3 algorithms. |
+
+## Validating it — what to compare against
+
+**There is no single true elevation-gain number.** Strava, Garmin and Google all
+disagree, because each derives elevation from a different terrain dataset. Run
+`compare.mjs` on any track and the disagreement is visible:
+
+    node compare.mjs track.json [--truth 350]
+
+The same 150-point ascent, same algorithm, four independent terrain datasets:
+
+| terrain source | gain |
+|---|---|
+| mapzen (this app) | 1275 m |
+| srtm30m | 1275 m |
+| eudem25m | 1230 m |
+| swisstopo LiDAR 0.5 m | 1311 m |
+
+**6.5% spread from the data alone.** No algorithm can be more consistent than
+the terrain data underneath it, so "matches Strava exactly" is not a
+reachable target — and not the right one.
+
+### The one reference that is not an estimate
+
+Pick a route that is **one continuous climb** — no rolling, no descent — and take
+the surveyed elevation of its start and end points. The difference is the true
+gain, and no smoothing or threshold choice can influence it. Then:
+
+1. Walk it once, recording with this app.
+2. `node compare.mjs track.json --truth <surveyed delta>`
+
+Sources of surveyed elevation: swisstopo `map.geo.admin.ch` (Switzerland,
+0.5 m LiDAR), national mapping agencies elsewhere, or trig-point markers.
+In Switzerland `compare.mjs` prints the surveyed endpoint difference for you.
+
+Then repeat the same climb 5 times in one recording. True gain is 5x the delta.
+That is the test that matters, because it exercises the accumulator the way an
+Everesting does.
 
 ## Calibration
 
