@@ -24,7 +24,7 @@
          margin-top:20px; max-height:30vh; overflow:auto; }
 </style>
 
-<h1>Altitrack &middot; DEM elevation</h1>
+<h1>Altitrack &middot; <span id="src">terrain model</span></h1>
 <div class="big gain"><span id="up">0</span><span>m climbed &#9650;</span></div>
 <div class="big" style="font-size:clamp(24px,8vw,36px);color:var(--dim)"><span id="down">0</span><span>m descended &#9660;</span></div>
 
@@ -46,7 +46,7 @@
 <div id="log"></div>
 
 <script type="module">
-import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled } from './altitude.js';
+import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor } from './altitude.js';
 
 const Z = 13;                 // ~13 m/px at 47°N — finer than SRTM's real 30 m
 
@@ -78,7 +78,25 @@ const pixel = (gx, gy) => {
   const t = tiles.get(`${Math.floor(gx/256)}/${Math.floor(gy/256)}`);
   return (t instanceof Float32Array) ? t[(((gy%256)+256)%256|0)*256 + (((gx%256)+256)%256|0)] : NaN;
 };
-async function elevationAt(lat, lon) {
+// Spain's IGN publishes a 5 m LiDAR terrain model, ~200 ms per point, CORS open.
+// In Barcelona it reads 21 m at Placa Catalunya where SRTM reads 33 — SRTM is a
+// SURFACE model, so in a city it measures rooftops.
+async function ignElevationAt(lat, lon) {
+  const d = 0.0002;
+  const q = new URLSearchParams({
+    service: 'WMS', version: '1.3.0', request: 'GetFeatureInfo',
+    layers: 'EL.ElevationGridCoverage', query_layers: 'EL.ElevationGridCoverage',
+    crs: 'EPSG:4326', bbox: `${lat-d},${lon-d},${lat+d},${lon+d}`,
+    width: '3', height: '3', i: '1', j: '1', info_format: 'text/plain',
+  });
+  const txt = await (await fetch('https://servicios.idee.es/wms-inspire/mdt?' + q)).text();
+  const m = txt.match(/GRAY_INDEX\s*=\s*(-?[\d.]+)/);
+  const v = m ? Number(m[1]) : NaN;
+  if (!Number.isFinite(v) || v < -50 || v > 4000) throw new Error('no coverage');
+  return v;
+}
+
+async function terrainAt(lat, lon) {
   const { x, y } = toGlobalPixel(lat, lon, Z);
   // bilinear touches the 2x2 pixel neighbourhood, which can straddle a tile edge
   const need = new Set();
@@ -86,6 +104,17 @@ async function elevationAt(lat, lon) {
     need.add(`${Math.floor((x+dx)/256)}/${Math.floor((y+dy)/256)}`);
   await Promise.all([...need].map(k => loadTile(...k.split('/').map(Number))));
   return sampleBilinear(pixel, x, y);
+}
+
+// The provider is locked for the whole track: two datasets disagree by metres at
+// the same coordinate, so switching mid-ride would book that as real climbing.
+// If the chosen provider fails, the fix is SKIPPED rather than filled from
+// another source.
+let provider = null;
+async function elevationAt(lat, lon) {
+  provider ??= providerFor(lat, lon);
+  if (provider === 'ign') return ignElevationAt(lat, lon);
+  return terrainAt(lat, lon);
 }
 
 // ---- track state ----
@@ -138,9 +167,11 @@ async function onFix(pos) {
     const ele = await elevationAt(lat, lon);
     if (!Number.isFinite(ele)) { setStatus('no terrain data'); return; }
     points.push({ ...fix, ele, devEle });
+    $('src').textContent = provider === 'ign' ? 'IGN 5 m LiDAR'
+                         : provider === 'swisstopo' ? 'swisstopo LiDAR' : 'SRTM 30 m';
     setStatus('moving');
     render();
-  } catch (e) { log('DEM error: ' + e.message); }
+  } catch (e) { setStatus('terrain lookup failed'); log('terrain error: ' + e.message); }
 }
 
 const DENIED_HELP = /iPhone|iPad|iPod/.test(navigator.userAgent)
@@ -176,7 +207,7 @@ function stop() {
 $('toggle').onclick = () => {
   if (watchId != null) return stop();
   if (points.length && !confirm(`Continue the existing track (${Math.round(summarize(points).total_elevation_gain)} m climbed)?\n\nCancel = start a new one.`)) {
-    points = []; settling = []; rejected = 0; render();
+    points = []; settling = []; rejected = 0; provider = null; render();
     ['ele','start'].forEach(k => $(k).textContent = '–');
     log('new track');
   }
@@ -184,7 +215,7 @@ $('toggle').onclick = () => {
 };
 $('reset').onclick = () => {
   if (!confirm('Discard track?')) return;
-  points = []; settling = []; rejected = 0; render();
+  points = []; settling = []; rejected = 0; provider = null; render();
   ['ele','start'].forEach(k => $(k).textContent = '–');
   setStatus('idle'); log('reset');
 };
@@ -207,7 +238,7 @@ $('json').onclick = () => {
     elev_high: s.elev_high, elev_low: s.elev_low,
     distance: s.distance, elapsed_time: s.elapsed_time, moving_time: s.elapsed_time,
     start_date: points[0] ? new Date(points[0].t).toISOString() : null,
-    elevation_source: `terrarium-dem-z${Z}`,
+    elevation_source: provider ?? `terrarium-dem-z${Z}`,
     streams: {
       latlng: points.map(p => [p.lat, p.lon]),
       altitude: s.smoothed.map(e => +e.toFixed(1)),

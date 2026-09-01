@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { smooth, gainLoss } from './altitude.js';
+import { smooth, gainLoss, providerFor } from './altitude.js';
 
 const file = process.argv[2];
 const truthArg = process.argv.indexOf('--truth');
@@ -71,6 +71,28 @@ function swisstopo() {
   return out.some(v => v == null) ? null : out;
 }
 
+// Spain: IGN MDT, 5 m LiDAR-derived terrain model. One request per point.
+const inSpain = coords.every(([la, lo]) => providerFor(la, lo) === 'ign');
+const ignAt = ([lat, lon]) => {
+  const d = 0.0002;
+  const q = `service=WMS&version=1.3.0&request=GetFeatureInfo&layers=EL.ElevationGridCoverage` +
+    `&query_layers=EL.ElevationGridCoverage&crs=EPSG:4326&bbox=${lat-d},${lon-d},${lat+d},${lon+d}` +
+    `&width=3&height=3&i=1&j=1&info_format=text/plain`;
+  const txt = execFileSync('curl', ['-sfL', '-m', '30', `https://servicios.idee.es/wms-inspire/mdt?${q}`], { encoding: 'utf8' });
+  const m = txt.match(/GRAY_INDEX\s*=\s*(-?[\d.]+)/);
+  const v = m ? Number(m[1]) : NaN;
+  return (Number.isFinite(v) && v > -50 && v < 4000) ? v : null;
+};
+function ign() {
+  const out = [];
+  for (const c of coords) {
+    try { out.push(ignAt(c)); } catch { out.push(null); }
+    if (out.length % 25 === 0) process.stderr.write(`\r  IGN: ${out.length}/${coords.length}`);
+  }
+  process.stderr.write('\n');
+  return out.some(v => v == null) ? null : out;
+}
+
 // ---------- algorithms ----------
 const raw = (e) => { let g = 0; for (let i = 1; i < e.length; i++) if (e[i] > e[i-1]) g += e[i] - e[i-1]; return g; };
 const gpxpy = (e) => {   // what the most-used GPX library does: 3-tap filter, NO threshold
@@ -82,6 +104,7 @@ const ours = (e, w = 5, t = 10) => gainLoss(smooth(e, w), t).gain;
 // ---------- run ----------
 const sources = { 'mapzen (what the app uses)': () => openTopo('mapzen'), 'srtm30m': () => openTopo('srtm30m'), 'eudem25m': () => openTopo('eudem25m') };
 if (inSwitzerland) sources['swisstopo LiDAR 0.5m'] = swisstopo;
+if (inSpain) sources['IGN MDT 5m LiDAR'] = ign;
 if (deviceEle) sources['phone GPS altitude'] = () => deviceEle;
 
 const rows = [];
@@ -107,6 +130,15 @@ if (TRUTH != null) {
 // For a single continuous climb, the surveyed endpoint difference IS the true
 // gain — no smoothing or threshold choices can influence it. That makes it the
 // only reference number in this whole exercise that is not itself an estimate.
+if (TRUTH == null && inSpain) {
+  try {
+    const a = ignAt(coords[0]), b = ignAt(coords.at(-1));
+    if (a != null && b != null) {
+      console.log(`\nIGN surveyed endpoints: ${a.toFixed(1)} m -> ${b.toFixed(1)} m  (delta ${(b - a).toFixed(1)} m)`);
+      console.log('If this route was ONE continuous climb, that delta is the true gain.');
+    }
+  } catch {}
+}
 if (TRUTH == null && inSwitzerland) {
   try {
     const at = ([lat, lon]) => { const [E, N] = wgs84ToLv95(lat, lon);

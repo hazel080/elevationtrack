@@ -155,4 +155,14 @@ console.log('all checks passed');
   console.log(`  10 hill repeats through the gate: +${s.total_elevation_gain} / -${s.total_elevation_loss} m`);
 }
 
+// provider routing
+{
+  const { providerFor } = await import('./altitude.js');
+  assert.strictEqual(providerFor(41.3874, 2.1686), 'ign');        // Barcelona
+  assert.strictEqual(providerFor(40.4168, -3.7038), 'ign');       // Madrid
+  assert.strictEqual(providerFor(47.05, 8.31), 'swisstopo');      // Luzern
+  assert.strictEqual(providerFor(45.4642, 9.19), 'terrarium');    // Milan
+  assert.strictEqual(providerFor(-33.86, 151.2), 'terrarium');    // Sydney
+}
+
 console.log('gate checks passed');

@@ -98,6 +98,21 @@ export function hasSettled(fixes, { n = 3, radius = 25 } = {}) {
   return recent.every(a => recent.every(b => haversine(a, b) <= radius));
 }
 
+/**
+ * Which terrain dataset to use for a coordinate. National LiDAR models are an
+ * order of magnitude better than global SRTM, especially in cities, where SRTM
+ * measures rooftops rather than ground.
+ *
+ * A track must stay on ONE provider start to finish. Two datasets disagree by
+ * metres at the same point, so switching mid-track would book that disagreement
+ * as real climbing.
+ */
+export function providerFor(lat, lon) {
+  if (lat > 35.9 && lat < 43.9 && lon > -9.4 && lon < 4.4) return 'ign';        // Spain, MDT 5 m LiDAR
+  if (lat > 45.8 && lat < 47.9 && lon > 5.9 && lon < 10.6) return 'swisstopo';  // Switzerland, 0.5 m LiDAR
+  return 'terrarium';                                                           // global fallback, ~30 m
+}
+
 export function haversine(a, b) {
   const R = 6371000, rad = Math.PI / 180;
   const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;

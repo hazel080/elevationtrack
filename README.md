@@ -15,8 +15,27 @@ location, press Start. HTTPS is required — browsers refuse geolocation otherwi
 ## How it works
 
 Elevation does **not** come from the phone's altimeter. Each GPS fix's lat/lon is
-looked up in a terrain model (AWS Terrarium tiles, SRTM-derived, no API key),
-bilinearly sampled, smoothed, then accumulated with a threshold.
+looked up in a terrain model, smoothed, then accumulated with a threshold.
+
+The model is chosen by location, because national LiDAR beats global SRTM badly:
+
+| where | dataset | resolution |
+|---|---|---|
+| Spain | IGN MDT (PNOA LiDAR) | 5 m |
+| Switzerland | swisstopo swissALTI3D | 0.5 m |
+| everywhere else | AWS Terrarium (SRTM) | ~30 m |
+
+It matters most in cities. SRTM is a *surface* model — it measures rooftops:
+
+| Barcelona | IGN 5 m | SRTM 30 m | actual |
+|---|---|---|---|
+| Tibidabo | 511.8 m | 512 m | ~512 |
+| Montjuïc | 171.7 m | 180 m | ~173 |
+| Plaça Catalunya | 21.1 m | 33 m | ~20 |
+
+A track stays on **one** provider start to finish. Two datasets disagree by
+metres at the same coordinate, so switching mid-ride would book that
+disagreement as real climbing. If the provider fails, the fix is skipped.
 
 This is Strava's own method for activities recorded without a barometer, and it
 buys two things:
@@ -60,8 +79,7 @@ The same 150-point ascent, same algorithm, four independent terrain datasets:
 
 | terrain source | gain |
 |---|---|
-| mapzen (this app) | 1275 m |
-| srtm30m | 1275 m |
+| mapzen / SRTM | 1275 m |
 | eudem25m | 1230 m |
 | swisstopo LiDAR 0.5 m | 1311 m |
 
@@ -78,9 +96,13 @@ gain, and no smoothing or threshold choice can influence it. Then:
 1. Walk it once, recording with this app.
 2. `node compare.mjs track.json --truth <surveyed delta>`
 
-Sources of surveyed elevation: swisstopo `map.geo.admin.ch` (Switzerland,
-0.5 m LiDAR), national mapping agencies elsewhere, or trig-point markers.
-In Switzerland `compare.mjs` prints the surveyed endpoint difference for you.
+`compare.mjs` prints the surveyed endpoint difference automatically in Spain and
+Switzerland. Elsewhere, use your national mapping agency or trig-point markers.
+
+**Barcelona reference route:** Plaça Espanya → Castell de Montjuïc.
+IGN surveys those endpoints at 26.6 m and 184.1 m — a **157.6 m** true climb,
+continuous, walkable in about 25 minutes. Measured on that route, this app reads
+**155 m: 1.6% low**, which is the expected smoothing bias.
 
 Then repeat the same climb 5 times in one recording. True gain is 5x the delta.
 That is the test that matters, because it exercises the accumulator the way an
