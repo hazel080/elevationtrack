@@ -25,14 +25,7 @@ export function sampleBilinear(getPixel, x, y) {
   return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
 }
 
-/**
- * Centred moving average, window in samples.
- * Wider = less phantom gain but more clipping of real summits (w=3 measured
- * -2.8% on real climbs but let phantom gain reach 39 m/50 min; w=5 costs -4.8%
- * and holds phantom near 11 m). A median filter was tried and was not better on
- * either axis. Phantom gain is the integrity risk, so we pay the undercount and
- * calibrate it out in the field.
- */
+/** Centred moving average, window in samples. */
 export function smooth(series, window = 5) {
   if (window < 2) return series.slice();
   const h = Math.floor(window / 2);
@@ -44,32 +37,52 @@ export function smooth(series, window = 5) {
 }
 
 /**
- * Peak-valley accumulator. Tracks the running extremum and only commits a leg
- * once the track reverses by more than `threshold` — so jitter (and saw-toothing)
- * never reverses direction, but a real turnaround is counted at full amplitude.
+ * Peak-valley accumulator with hysteresis. Direction decisions come from a
+ * centred moving average (window samples) so GPS jitter cannot reverse the
+ * direction; the amplitude of each leg is read from the RAW series at the index
+ * where the smoothed series peaked. Reading amplitude from the smoothed series
+ * clipped every summit and valley by ~slope x spacing x window/4 — a bias that
+ * grows with the number of extrema, so it could not be calibrated out on
+ * rolling terrain (measured: 903 m of a true 1000 m; now 983).
+ *
+ * `hi`/`lo`: optional per-sample extremes of the terrain scanned along the
+ * INTERIOR of the segment that arrives at that sample (see segmentSamples);
+ * undefined where nothing was scanned. Endpoints are excluded so a fix's own
+ * GPS noise enters only through its own value. A turnaround usually
+ * falls between two fixes, so the summit is read from the two segments adjacent
+ * to the smoothed extremum, not from the fix itself. Only the adjacent segments:
+ * taking the max over the whole leg would select the noisiest fix.
+ *
+ * Wider window = less phantom gain but short bumps vanish (w=7 at 30 m spacing
+ * lost ALL of a 30 m/200 m rolling profile). A median filter was tried and was
+ * not better on either axis.
  */
-export function gainLoss(elevations, threshold = 10) {
+export function gainLoss(elevations, threshold = 10, window = 5, { hi = [], lo = [] } = {}) {
   if (elevations.length === 0) return { gain: 0, loss: 0 };
+  const s = smooth(elevations, window);
+  const top = (i) => Math.max(elevations[i], hi[i] ?? -Infinity, hi[i + 1] ?? -Infinity);
+  const bottom = (i) => Math.min(elevations[i], lo[i] ?? Infinity, lo[i + 1] ?? Infinity);
   let gain = 0, loss = 0, dir = 0;
-  let anchor = elevations[0], ext = elevations[0];
-  let lo = elevations[0], hi = elevations[0]; // extremes while direction unknown
+  let anchor = elevations[0];          // raw elevation where the current leg started
+  let ext = 0, iLo = 0, iHi = 0;        // indices into s (iLo/iHi: while direction unknown)
 
-  for (const e of elevations) {
+  for (let i = 0; i < s.length; i++) {
+    const e = s[i];
     if (dir === 0) {
-      if (e < lo) lo = e;
-      if (e > hi) hi = e;
-      if (e >= lo + threshold) { dir = 1; anchor = lo; ext = e; }
-      else if (e <= hi - threshold) { dir = -1; anchor = hi; ext = e; }
+      if (e < s[iLo]) iLo = i;
+      if (e > s[iHi]) iHi = i;
+      if (e >= s[iLo] + threshold) { dir = 1; anchor = bottom(iLo); ext = i; }
+      else if (e <= s[iHi] - threshold) { dir = -1; anchor = top(iHi); ext = i; }
     } else if (dir === 1) {
-      if (e > ext) ext = e;
-      else if (e <= ext - threshold) { gain += ext - anchor; anchor = ext; ext = e; dir = -1; }
+      if (e > s[ext]) ext = i;
+      else if (e <= s[ext] - threshold) { const t = top(ext); gain += t - anchor; anchor = t; ext = i; dir = -1; }
     } else {
-      if (e < ext) ext = e;
-      else if (e >= ext + threshold) { loss += anchor - ext; anchor = ext; ext = e; dir = 1; }
+      if (e < s[ext]) ext = i;
+      else if (e >= s[ext] + threshold) { const b = bottom(ext); loss += anchor - b; anchor = b; ext = i; dir = 1; }
     }
   }
-  if (dir === 1) gain += ext - anchor;
-  else if (dir === -1) loss += anchor - ext;
+  if (dir === 1) gain += Math.max(0, top(ext) - anchor);
+  else if (dir === -1) loss += Math.max(0, anchor - bottom(ext));
   return { gain, loss };
 }
 
@@ -79,9 +92,13 @@ export function gainLoss(elevations, threshold = 10) {
  * a fix that is merely imprecise still produces a plausible-looking elevation,
  * so it has to be rejected here, not smoothed away later.
  */
-export function shouldAccept(last, fix, { minMove = 10, accFactor = 1.5, maxAccuracy = 20, maxSpeed = 30 } = {}) {
+export function shouldAccept(last, fix, { minMove = 10, accFactor = 1.5, maxAccuracy = 20, maxSpeed = 30, minSpeed = 0.3 } = {}) {
   if (!(fix.acc <= maxAccuracy)) return 'accuracy';
   if (!last) return true;
+  // Doppler speed (coords.speed) reads ~0 while standing still even when the
+  // position drifts tens of metres — the one signal that separates the two.
+  // null / -1 = receiver did not report it; fall through to the distance gate.
+  if (fix.speed != null && fix.speed >= 0 && fix.speed < minSpeed) return 'stationary';
   const d = haversine(last, fix);
   const dt = (fix.t - last.t) / 1000;
   // faster than any human on a hill => bad fix, not movement
@@ -113,6 +130,59 @@ export function providerFor(lat, lon) {
   return 'terrarium';                                                           // global fallback, ~30 m
 }
 
+/**
+ * Interior points every ~`step` metres along the straight line a -> b, so the
+ * terrain between two fixes can be scanned for a summit that fell between them.
+ * ponytail: straight line in lat/lon; fixes are 10-30 m apart so a hairpin cuts
+ * at most a few metres of corner. Snap to a road network if that ever matters.
+ */
+export function segmentSamples(a, b, step) {
+  const n = Math.floor(haversine(a, b) / step);
+  return Array.from({ length: n }, (_, k) => {
+    const f = (k + 1) / (n + 1);
+    return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f };
+  });
+}
+
+/**
+ * Stationary episodes. A run of points that never leaves `radius` of where the
+ * run started, lasting at least `minTime` seconds, is someone standing still
+ * while the GPS wanders — nobody gains the 10 m threshold inside a 40 m circle.
+ * The wander is dropped from the LATEST point that still anchors the run, so
+ * the approach to the stop (and the true valley) is kept and only the wander goes.
+ *
+ * Why anchored to the run START and not a sliding window: at hike-a-bike pace a
+ * zigzag climb (0.4 m/s, 30 m hairpins, 12% grade) never leaves a sliding 40 m
+ * window either, and a sliding rule erased that climb entirely in testing.
+ * Why 120 s and not 10 min: drift leaves the circle and starts a new run long
+ * before 10 min, so a long minimum collapses nothing.
+ * Measured: 50 min standing on a 30% slope with 20 m fixes, 37 m -> 18 m; with
+ * 40 m of drift, 19 m -> 0. Real climbs unchanged.
+ */
+export function dropStationary(points, { radius = 40, minTime = 120 } = {}) {
+  const within = (k, end) => points.slice(k + 1, end).every(p => haversine(points[k], p) <= radius);
+  const out = [];
+  for (let start = 0, i = 1; i <= points.length; i++) {
+    if (i < points.length && haversine(points[start], points[i]) <= radius) continue;
+    let k = start;   // latest anchor from which the rest of the run is still one stationary episode
+    if ((points[i - 1].t - points[start].t) / 1000 >= minTime)
+      for (let j = i - 1; j > start; j--) if ((points[i - 1].t - points[j].t) / 1000 >= minTime && within(j, i)) { k = j; break; }
+    out.push(...points.slice(start, k + 1));
+    if (k === start && (points[i - 1].t - points[start].t) / 1000 < minTime) out.push(...points.slice(start + 1, i));
+    start = i;
+  }
+  return out;
+}
+
+/** WGS84 -> Swiss LV95 [E, N]. swisstopo's published approximation, ~1 m. */
+export function wgs84ToLv95(lat, lon) {
+  const p = (lat * 3600 - 169028.66) / 10000, l = (lon * 3600 - 26782.5) / 10000;
+  return [
+    2600072.37 + 211455.93 * l - 10938.51 * l * p - 0.36 * l * p ** 2 - 44.54 * l ** 3,
+    1200147.07 + 308807.95 * p + 3745.25 * l ** 2 + 76.63 * p ** 2 - 194.56 * l ** 2 * p + 119.79 * p ** 3,
+  ];
+}
+
 export function haversine(a, b) {
   const R = 6371000, rad = Math.PI / 180;
   const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
@@ -123,8 +193,9 @@ export function haversine(a, b) {
 
 /** Full pipeline over a track of {lat,lon,t,ele}. */
 export function summarize(points, { threshold = 10, window = 5 } = {}) {
-  const ele = smooth(points.map(p => p.ele), window);
-  const { gain, loss } = gainLoss(ele, threshold);
+  points = dropStationary(points);
+  const raw = points.map(p => p.ele), ele = smooth(raw, window);
+  const { gain, loss } = gainLoss(raw, threshold, window, { hi: points.map(p => p.hi), lo: points.map(p => p.lo) });
   let distance = 0;
   for (let i = 1; i < points.length; i++) distance += haversine(points[i - 1], points[i]);
   const t0 = points[0]?.t ?? 0, t1 = points.at(-1)?.t ?? 0;

@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { smooth, gainLoss, providerFor } from './altitude.js';
+import { gainLoss, providerFor, wgs84ToLv95 } from './altitude.js';
 
 const file = process.argv[2];
 const truthArg = process.argv.indexOf('--truth');
@@ -52,13 +52,6 @@ function openTopo(dataset) {
 // swisstopo swissALTI3D — airborne LiDAR, the most accurate terrain data available
 // anywhere for the area it covers. Needs LV95 coordinates.
 const inSwitzerland = coords.every(([la, lo]) => la > 45.8 && la < 47.9 && lo > 5.9 && lo < 10.6);
-function wgs84ToLv95(lat, lon) {          // swisstopo's published approximation, ~1 m
-  const p = (lat * 3600 - 169028.66) / 10000, l = (lon * 3600 - 26782.5) / 10000;
-  return [
-    2600072.37 + 211455.93*l - 10938.51*l*p - 0.36*l*p**2 - 44.54*l**3,
-    1200147.07 + 308807.95*p + 3745.25*l**2 + 76.63*p**2 - 194.56*l**2*p + 119.79*p**3,
-  ];
-}
 function swisstopo() {
   const out = [];
   for (const [lat, lon] of coords) {
@@ -74,7 +67,7 @@ function swisstopo() {
 // Spain: IGN MDT, 5 m LiDAR-derived terrain model. One request per point.
 const inSpain = coords.every(([la, lo]) => providerFor(la, lo) === 'ign');
 const ignAt = ([lat, lon]) => {
-  const d = 0.0002;
+  const d = 0.00005;
   const q = `service=WMS&version=1.3.0&request=GetFeatureInfo&layers=EL.ElevationGridCoverage` +
     `&query_layers=EL.ElevationGridCoverage&crs=EPSG:4326&bbox=${lat-d},${lon-d},${lat+d},${lon+d}` +
     `&width=3&height=3&i=1&j=1&info_format=text/plain`;
@@ -99,7 +92,7 @@ const gpxpy = (e) => {   // what the most-used GPX library does: 3-tap filter, N
   const s = e.map((v, i) => (i > 0 && i < e.length - 1) ? e[i-1]*.3 + v*.4 + e[i+1]*.3 : v);
   return raw(s);
 };
-const ours = (e, w = 5, t = 10) => gainLoss(smooth(e, w), t).gain;
+const ours = (e, w = 5, t = 10) => gainLoss(e, t, w).gain;
 
 // ---------- run ----------
 const sources = { 'mapzen (what the app uses)': () => openTopo('mapzen'), 'srtm30m': () => openTopo('srtm30m'), 'eudem25m': () => openTopo('eudem25m') };

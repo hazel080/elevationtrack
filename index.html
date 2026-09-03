@@ -3,30 +3,85 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Altitrack</title>
 <style>
-  :root { color-scheme: dark; --bg:#0b0d10; --fg:#e8eaed; --dim:#8b939c; --acc:#ff6b35; }
+  :root {
+    color-scheme: light;
+    --u: 8px;                 /* 8 px base grid — every spacing value is a multiple */
+    --pad: clamp(16px, 5vw, 48px);
+    --fg: #000; --bg: #fff; --dim: #767676; --rule: #000;
+  }
   * { box-sizing: border-box; }
-  body { margin:0; padding:env(safe-area-inset-top) 16px 24px; background:var(--bg); color:var(--fg);
-         font:16px/1.4 -apple-system,BlinkMacSystemFont,system-ui,sans-serif; }
-  h1 { font-size:13px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); margin:20px 0 16px; }
-  .big { font-size:clamp(56px,22vw,96px); font-weight:700; line-height:1; letter-spacing:-.03em;
-         font-variant-numeric:tabular-nums; }
-  .big span { font-size:.28em; color:var(--dim); font-weight:500; margin-left:.3em; }
-  .gain { color:var(--acc); }
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:24px 0; }
-  .cell { background:#151920; border-radius:12px; padding:12px 14px; }
-  .cell b { display:block; font-size:22px; font-variant-numeric:tabular-nums; font-weight:600; }
-  .cell i { font-style:normal; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
-  button { width:100%; padding:16px; font-size:17px; font-weight:600; border:0; border-radius:12px;
-           background:#222831; color:var(--fg); margin-bottom:10px; -webkit-tap-highlight-color:transparent; }
-  button.go { background:var(--acc); color:#0b0d10; }
-  .row { display:flex; gap:10px; }
-  #log { font:11px/1.5 ui-monospace,Menlo,monospace; color:var(--dim); white-space:pre-wrap;
-         margin-top:20px; max-height:30vh; overflow:auto; }
+  body {
+    margin: 0;
+    padding: calc(env(safe-area-inset-top) + var(--u) * 4) var(--pad) calc(var(--u) * 6);
+    max-width: 720px;
+    background: var(--bg); color: var(--fg);
+    font: 400 16px/1.5 "Helvetica Neue", Helvetica, Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 {
+    display: flex; justify-content: space-between; align-items: baseline; gap: var(--u);
+    margin: 0 0 calc(var(--u) * 4);
+    padding-bottom: var(--u);
+    border-bottom: 1px solid var(--rule);
+    font-size: 11px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase;
+  }
+  h1 span { font-weight: 400; letter-spacing: .12em; color: var(--dim); }
+
+  .read { margin-bottom: calc(var(--u) * 4); }
+  .read b {
+    display: block;
+    font-size: clamp(64px, 26vw, 132px); font-weight: 700; line-height: .86;
+    letter-spacing: -.04em; font-variant-numeric: tabular-nums;
+  }
+  .read i {
+    display: block; margin-top: var(--u);
+    font-style: normal; font-size: 11px; font-weight: 700;
+    letter-spacing: .2em; text-transform: uppercase;
+  }
+  .read.sub b { font-size: clamp(28px, 11vw, 48px); font-weight: 400; color: var(--dim); }
+  .read.sub i { color: var(--dim); }
+
+  /* Data table: rules, not boxes. Hierarchy from weight and size, never colour. */
+  .grid {
+    display: grid; grid-template-columns: repeat(2, 1fr);
+    border-top: 1px solid var(--rule);
+    margin: 0 0 calc(var(--u) * 4);
+  }
+  .cell { border-bottom: 1px solid var(--rule); padding: calc(var(--u) * 1.5) 0; }
+  .cell:nth-child(odd) { padding-right: var(--u); }
+  .cell:nth-child(even) { padding-left: var(--u); border-left: 1px solid var(--rule); }
+  .cell i {
+    display: block; font-style: normal; font-size: 10px; font-weight: 700;
+    letter-spacing: .16em; text-transform: uppercase; color: var(--dim);
+  }
+  .cell b {
+    display: block; margin-top: calc(var(--u) / 2);
+    font-size: 20px; font-weight: 400; font-variant-numeric: tabular-nums;
+  }
+
+  button {
+    width: 100%; padding: calc(var(--u) * 2); margin-bottom: var(--u);
+    border: 1px solid var(--fg); border-radius: 0;
+    background: var(--bg); color: var(--fg);
+    font: 700 13px/1 "Helvetica Neue", Helvetica, Inter, system-ui, sans-serif;
+    letter-spacing: .16em; text-transform: uppercase;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button.go { background: var(--fg); color: var(--bg); }
+  .row { display: flex; gap: var(--u); }
+
+  #log {
+    margin-top: calc(var(--u) * 4); padding-top: var(--u);
+    border-top: 1px solid var(--rule);
+    font: 11px/1.6 ui-monospace, Menlo, monospace; color: var(--dim);
+    white-space: pre-wrap; max-height: 30vh; overflow: auto;
+  }
 </style>
 
-<h1>Altitrack &middot; <span id="src">terrain model</span></h1>
-<div class="big gain"><span id="up">0</span><span>m climbed &#9650;</span></div>
-<div class="big" style="font-size:clamp(24px,8vw,36px);color:var(--dim)"><span id="down">0</span><span>m descended &#9660;</span></div>
+<h1>Altitrack <span id="src">terrain model</span></h1>
+
+<div class="read"><b id="up">0</b><i>Metres climbed</i></div>
+<div class="read sub"><b id="down">0</b><i>Metres descended</i></div>
 
 <div class="grid">
   <div class="cell"><i>Elevation</i><b id="ele">–</b></div>
@@ -34,7 +89,7 @@
   <div class="cell"><i>GPS accuracy</i><b id="acc">–</b></div>
   <div class="cell"><i>Track points</i><b id="pts">0</b></div>
   <div class="cell"><i>Started at</i><b id="start">–</b></div>
-  <div class="cell"><i>Status</i><b id="status" style="font-size:15px">idle</b></div>
+  <div class="cell"><i>Status</i><b id="status">idle</b></div>
 </div>
 
 <button id="toggle" class="go">Start</button>
@@ -45,8 +100,9 @@
 <button id="reset">Reset</button>
 <div id="log"></div>
 
+
 <script type="module">
-import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor } from './altitude.js';
+import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor, wgs84ToLv95, segmentSamples } from './altitude.js';
 
 const Z = 13;                 // ~13 m/px at 47°N — finer than SRTM's real 30 m
 
@@ -60,7 +116,9 @@ async function loadTile(tx, ty) {
   if (tiles.has(key)) return tiles.get(key);
   const p = (async () => {
     const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${Z}/${tx}/${ty}.png`;
-    const bmp = await createImageBitmap(await (await fetch(url)).blob());
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`tile ${key} HTTP ${res.status}`);
+    const bmp = await createImageBitmap(await res.blob());
     const c = new OffscreenCanvas(256, 256);
     const ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(bmp, 0, 0);
@@ -71,6 +129,7 @@ async function loadTile(tx, ty) {
     log(`tile ${key} loaded`);
     return out;
   })();
+  p.catch(() => tiles.delete(key));   // a failed fetch must not poison every later lookup in this tile
   tiles.set(key, p);
   return p;
 }
@@ -82,17 +141,26 @@ const pixel = (gx, gy) => {
 // In Barcelona it reads 21 m at Placa Catalunya where SRTM reads 33 — SRTM is a
 // SURFACE model, so in a city it measures rooftops.
 async function ignElevationAt(lat, lon) {
-  const d = 0.0002;
+  const d = 0.00005;   // ~10 m box: the server resamples the bbox, so keep it near one 5 m cell
   const q = new URLSearchParams({
     service: 'WMS', version: '1.3.0', request: 'GetFeatureInfo',
     layers: 'EL.ElevationGridCoverage', query_layers: 'EL.ElevationGridCoverage',
     crs: 'EPSG:4326', bbox: `${lat-d},${lon-d},${lat+d},${lon+d}`,
     width: '3', height: '3', i: '1', j: '1', info_format: 'text/plain',
   });
-  const txt = await (await fetch('https://servicios.idee.es/wms-inspire/mdt?' + q)).text();
+  const txt = await (await fetch('https://servicios.idee.es/wms-inspire/mdt?' + q, { signal: AbortSignal.timeout(8000) })).text();
   const m = txt.match(/GRAY_INDEX\s*=\s*(-?[\d.]+)/);
   const v = m ? Number(m[1]) : NaN;
   if (!Number.isFinite(v) || v < -50 || v > 4000) throw new Error('no coverage');
+  return v;
+}
+
+// swisstopo swissALTI3D via the height REST service, ~80 ms per point, CORS open. Wants LV95.
+async function swisstopoElevationAt(lat, lon) {
+  const [E, N] = wgs84ToLv95(lat, lon);
+  const url = `https://api3.geo.admin.ch/rest/services/height?easting=${E.toFixed(1)}&northing=${N.toFixed(1)}&sr=2056`;
+  const v = Number((await (await fetch(url, { signal: AbortSignal.timeout(8000) })).json()).height);
+  if (!Number.isFinite(v)) throw new Error('no coverage');
   return v;
 }
 
@@ -112,8 +180,10 @@ async function terrainAt(lat, lon) {
 // another source.
 let provider = null;
 async function elevationAt(lat, lon) {
-  provider ??= providerFor(lat, lon);
+  const p0 = points[0] ?? { lat, lon };   // after a reload, re-derive from where the track STARTED
+  provider ??= providerFor(p0.lat, p0.lon);
   if (provider === 'ign') return ignElevationAt(lat, lon);
+  if (provider === 'swisstopo') return swisstopoElevationAt(lat, lon);
   return terrainAt(lat, lon);
 }
 
@@ -121,6 +191,8 @@ async function elevationAt(lat, lon) {
 let points = JSON.parse(localStorage.getItem('altitrack') || '[]');
 let watchId = null, wakeLock = null, timer = null;
 let settling = [];            // fixes held until GPS agrees with itself
+let settled = false;          // reset on every Start: a resumed track cold-starts too
+let lookup = false;           // a terrain lookup is in flight; later fixes wait for the next tick
 let rejected = 0;
 
 function render() {
@@ -141,18 +213,18 @@ function render() {
 const setStatus = (t) => { $('status').textContent = t; };
 
 async function onFix(pos) {
-  const { latitude: lat, longitude: lon, accuracy: acc, altitude: devEle } = pos.coords;
-  const fix = { lat, lon, acc, t: pos.timestamp };
+  const { latitude: lat, longitude: lon, accuracy: acc, altitude: devEle, speed } = pos.coords;
+  const fix = { lat, lon, acc, speed, t: pos.timestamp };
   $('acc').textContent = Math.round(acc) + ' m';
 
   // 1. Cold start: the first fixes are often coarse network fixes hundreds of
   //    metres out. Hold them until consecutive fixes agree, or the jump to the
   //    first real satellite fix gets booked as a climb.
-  if (points.length === 0) {
+  if (!settled) {
     if (acc > 20) { setStatus(`waiting for GPS (${Math.round(acc)} m)`); return; }
     settling.push(fix);
     if (!hasSettled(settling)) { setStatus(`settling ${settling.length}/3`); return; }
-    settling = [];
+    settling = []; settled = true;
   }
 
   // 2. Gate every fix before it can touch the elevation math.
@@ -163,15 +235,31 @@ async function onFix(pos) {
     return;
   }
 
+  // Lookups are async (80-700 ms). Two in flight would be gated against the
+  // same last point and could land out of time order; drop this fix instead —
+  // the next one is gated from the last ACCEPTED point, so nothing is lost.
+  if (lookup) return;
+  lookup = true;
   try {
     const ele = await elevationAt(lat, lon);
     if (!Number.isFinite(ele)) { setStatus('no terrain data'); return; }
-    points.push({ ...fix, ele, devEle });
+    // Scan the terrain between the last point and this one: the summit of a
+    // climb almost always falls between two fixes. Tile lookups are free; the
+    // national services cost one request per sample, so they get a coarser step.
+    let hi, lo;
+    const last = points.at(-1);
+    if (last) {
+      const step = provider === 'terrarium' ? 5 : 10;
+      const r = await Promise.allSettled(segmentSamples(last, fix, step).map(p => elevationAt(p.lat, p.lon)));
+      for (const x of r) if (x.status === 'fulfilled' && Number.isFinite(x.value)) { hi = Math.max(hi ?? -Infinity, x.value); lo = Math.min(lo ?? Infinity, x.value); }
+    }
+    points.push({ ...fix, ele, hi, lo, devEle });
     $('src').textContent = provider === 'ign' ? 'IGN 5 m LiDAR'
                          : provider === 'swisstopo' ? 'swisstopo LiDAR' : 'SRTM 30 m';
     setStatus('moving');
     render();
   } catch (e) { setStatus('terrain lookup failed'); log('terrain error: ' + e.message); }
+  finally { lookup = false; }
 }
 
 const DENIED_HELP = /iPhone|iPad|iPod/.test(navigator.userAgent)
@@ -185,12 +273,16 @@ function onGpsError(e) {
   else log('GPS error: ' + e.message);
 }
 
+const holdWakeLock = async () => { try { wakeLock = await navigator.wakeLock.request('screen'); } catch {} };
+document.addEventListener('visibilitychange', () => { if (watchId != null && document.visibilityState === 'visible') holdWakeLock(); });
+
 async function start() {
   if (!navigator.geolocation) return log('no geolocation');
   if (!window.isSecureContext) return log('needs https:// — open the tunnel URL, not the LAN address');
   watchId = navigator.geolocation.watchPosition(onFix, onGpsError,
     { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
-  try { wakeLock = await navigator.wakeLock.request('screen'); } catch {}
+  settled = false; settling = [];
+  await holdWakeLock();
   timer = setInterval(render, 1000);
   setStatus('acquiring GPS');
   $('toggle').textContent = 'Stop'; $('toggle').classList.remove('go');
@@ -207,7 +299,7 @@ function stop() {
 $('toggle').onclick = () => {
   if (watchId != null) return stop();
   if (points.length && !confirm(`Continue the existing track (${Math.round(summarize(points).total_elevation_gain)} m climbed)?\n\nCancel = start a new one.`)) {
-    points = []; settling = []; rejected = 0; provider = null; render();
+    points = []; rejected = 0; provider = null; render();
     ['ele','start'].forEach(k => $(k).textContent = '–');
     log('new track');
   }

@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { decodeTerrarium, gainLoss, smooth, sampleBilinear, summarize, haversine } from './altitude.js';
+import { decodeTerrarium, gainLoss, smooth, sampleBilinear, summarize, haversine, wgs84ToLv95, segmentSamples } from './altitude.js';
 
 // terrarium encoding: sea level is (32768 -> R=128,G=0,B=0)
 assert.strictEqual(decodeTerrarium(128, 0, 0), 0);
@@ -37,7 +37,7 @@ const rnd = () => {
   assert.strictEqual(new Set(v).size, v.length, 'PRNG cycled');
 }
 const noisy = clean.map(e => e + rnd() * 6);
-r = gainLoss(smooth(noisy, 11), 10);
+r = gainLoss(noisy, 10, 11);
 assert.ok(Math.abs(r.gain - 1000) < 60, `noisy gain ${r.gain} (saw-tooth leaked in)`);
 assert.ok(Math.abs(r.loss - 1000) < 60, `noisy loss ${r.loss}`);
 
@@ -45,14 +45,26 @@ assert.ok(Math.abs(r.loss - 1000) < 60, `noisy loss ${r.loss}`);
 // horizontal GPS jitter of ~10 m on flat ground moves elevation by ~1-2 m,
 // not the +/-10 m that raw GPS altitude would wander. 33 min of it must read ~0.
 const flatNoisy = Array.from({ length: 2000 }, () => 500 + rnd() * 4);
-r = gainLoss(smooth(flatNoisy, 11), 10);
+r = gainLoss(flatNoisy, 10, 11);
 assert.ok(r.gain < 10, `phantom gain on flat ground: ${r.gain}`);
 
 // ponytail: known ceiling -- at +/-8 m noise (raw-GPS-altitude grade) phantom gain
 // reaches ~40 m/30 min. That is the reason we use DEM, not device altitude.
 
 // no-threshold control: proves the threshold is what's doing the work
-assert.ok(gainLoss(flatNoisy, 0).gain > 200, 'unthresholded flat noise should inflate');
+assert.ok(gainLoss(flatNoisy, 0, 1).gain > 200, 'unthresholded flat noise should inflate');
+
+// What the app does per accepted fix: scan the terrain along the segment from
+// the previous point and keep the interior extremes.
+const scan = (last, f, demAt, step = 5) => {
+  const e = segmentSamples(last, f, step).map(demAt);
+  return e.length ? { hi: Math.max(...e), lo: Math.min(...e) } : {};
+};
+{ // 3 interior samples for a 20 m segment at 5 m steps, evenly spaced
+  const ss = segmentSamples({ lat: 47, lon: 8 }, { lat: 47.00018, lon: 8 }, 5);
+  assert.strictEqual(ss.length, 4);
+  assert.ok(Math.abs(ss[1].lat - 47.000072) < 1e-6, `segment sample ${ss[1].lat}`);
+}
 
 // haversine sanity: 0.01 deg lat ~ 1111 m
 assert.ok(Math.abs(haversine({lat:47,lon:8},{lat:47.01,lon:8}) - 1111) < 5);
@@ -95,7 +107,7 @@ console.log('all checks passed');
     ungatedPhantom += u.total_elevation_gain + u.total_elevation_loss;
 
     const kept = [];
-    for (const f of raw) if (shouldAccept(kept.at(-1), f) === true) kept.push({ ...f, ele: demAt(f.lat) });
+    for (const f of raw) if (shouldAccept(kept.at(-1), f) === true) kept.push({ ...f, ele: demAt(f.lat), ...(kept.length ? scan(kept.at(-1), f, p => demAt(p.lat)) : {}) });
     gatedPoints += kept.length;
     if (kept.length) {
       const g = summarize(kept);
@@ -139,20 +151,98 @@ console.log('all checks passed');
   }
   const demAt = (la) => 500 + Math.abs((la - 47.05) * 111320) * 0.10;
   const kept = [];
-  for (const f of pts) if (shouldAccept(kept.at(-1), f) === true) kept.push({ ...f, ele: demAt(f.lat) });
+  for (const f of pts) if (shouldAccept(kept.at(-1), f) === true) kept.push({ ...f, ele: demAt(f.lat), ...(kept.length ? scan(kept.at(-1), f, p => demAt(p.lat)) : {}) });
   // The gate subsamples (it measures from the last ACCEPTED point, so rejected
   // fixes are not lost — their distance carries forward), but must not starve.
   assert.ok(kept.length > pts.length * 0.4, `gate kept only ${kept.length}/${pts.length}`);
   const s = summarize(kept);
+  // This is an out-and-back on a line: the summit is the TURNAROUND, so the
+  // straight-line scan between the fixes before and after cannot see it. The
+  // last accepted fix is at most one gate distance short of the top, which is
+  // the 2% here. A crossed summit (see the rolling test) is recovered by the scan.
   // The requirement is asymmetric on purpose. Overcounting is an integrity
   // failure — it is how a rider banks metres they never climbed. Undercounting is
   // a known, systematic smoothing bias that field calibration removes. So: never
   // above truth, and no worse than 10% below it.
   for (const [what, v] of [['gain', s.total_elevation_gain], ['loss', s.total_elevation_loss]]) {
     assert.ok(v <= 1000, `OVERCOUNTED ${what}: ${v} > 1000`);
-    assert.ok(v >= 900, `${what} undercounts beyond the calibratable band: ${v}`);
+    assert.ok(v >= 975, `${what} undercounts beyond the calibratable band: ${v}`);
   }
   console.log(`  10 hill repeats through the gate: +${s.total_elevation_gain} / -${s.total_elevation_loss} m`);
+}
+
+// Rolling terrain: 15 m sine hills, 300 m period, 10 km, walked with 8 m GPS
+// noise. Truth = 2 x 15 m x 33.3 hills = 1000 m. Reading amplitude from the
+// SMOOTHED series clipped every apex and read 903 here; the bias scaled with the
+// number of extrema, so it could not be calibrated out.
+{
+  const { shouldAccept } = await import('./altitude.js');
+  const kept = []; let last = null, x = 0, t = 0;
+  while (x < 10000) {
+    x += 2.8;
+    const f = { lat: 47.05 + x / 111320, lon: 8.31, acc: 8, t: (t += 2000) };
+    const dem = (p) => 500 + 15 * Math.sin(2 * Math.PI * ((p.lat - 47.05) * 111320 + rnd() * 8) / 300);
+    if (shouldAccept(last, f) === true) { kept.push({ ...f, ele: dem(f), ...(last ? scan(last, f, dem) : {}) }); last = f; }
+  }
+  const s = summarize(kept);
+  assert.ok(s.total_elevation_gain <= 1000, `OVERCOUNTED rolling: ${s.total_elevation_gain}`);
+  assert.ok(s.total_elevation_gain >= 985, `rolling undercounts: ${s.total_elevation_gain}`);
+  console.log(`  10 km of 15 m rolling hills: +${s.total_elevation_gain} m (true 1000)`);
+
+  // Same idea with bad GPS (20 m accuracy => fixes 30 m apart) on 30 m hills of
+  // 200 m period: the summit is crossed between fixes almost every time. Without
+  // the segment scan this read 2753 of 3000.
+  const kept2 = []; last = null; x = 0;
+  while (x < 10000) {
+    x += 2.8;
+    const f = { lat: 47.05 + x / 111320, lon: 8.31, acc: 20, t: (t += 2000) };
+    const dem = (p) => 500 + 30 * Math.sin(2 * Math.PI * ((p.lat - 47.05) * 111320 + rnd() * 20) / 200);
+    if (shouldAccept(last, f) === true) { kept2.push({ ...f, ele: dem(f), ...(last ? scan(last, f, dem) : {}) }); last = f; }
+  }
+  const g2 = summarize(kept2).total_elevation_gain;
+  assert.ok(g2 <= 3000, `OVERCOUNTED rolling/bad GPS: ${g2}`);
+  assert.ok(g2 >= 2900, `rolling/bad GPS undercounts: ${g2}`);
+  console.log(`  10 km of 30 m hills with 20 m GPS accuracy: +${g2} m (true 3000)`);
+
+  // Doppler speed gate: a drifting fix that reports ~0 m/s is standing still.
+  assert.strictEqual(shouldAccept({ lat: 47, lon: 8, acc: 10, t: 0 },
+                                  { lat: 47.0005, lon: 8, acc: 10, t: 5000, speed: 0 }), 'stationary');
+  assert.strictEqual(shouldAccept({ lat: 47, lon: 8, acc: 10, t: 0 },
+                                  { lat: 47.0002, lon: 8, acc: 10, t: 5000, speed: -1 }), true);  // -1 = not reported
+  assert.strictEqual(shouldAccept({ lat: 47, lon: 8, acc: 10, t: 0 },
+                                  { lat: 47.0002, lon: 8, acc: 10, t: 5000, speed: null }), true);
+}
+
+// Stationary episodes: a 3 min rest at the bottom of a 30% hill with 30 m of
+// GPS wander must add nothing, while the hill repeat around it is untouched.
+{
+  const { shouldAccept, dropStationary } = await import('./altitude.js');
+  const demAt = (la) => 500 + Math.abs((la - 47.05) * 111320) * 0.30;
+  const raw = []; let lat = 47.05, t = 0;
+  const walk = (dir, n) => { for (let i = 0; i < n; i++) { lat += (dir * 10) / 111320; raw.push({ lat, lon: 8.31, acc: 8, t: (t += 5000) }); } };
+  const rest = (secs) => { let dn = 0, de = 0; for (let i = 0; i < secs; i++) { dn = Math.max(-30, Math.min(30, dn + rnd() * 8)); de = Math.max(-30, Math.min(30, de + rnd() * 8));
+    raw.push({ lat: lat + dn / 111320, lon: 8.31 + de / 75000, acc: 15, t: (t += 1000) }); } };
+  const gate = (fixes) => { const k = []; for (const f of fixes) if (shouldAccept(k.at(-1), f) === true) k.push({ ...f, ele: demAt(f.lat) }); return k; };
+  walk(1, 100); walk(-1, 100); const restAt = raw.length; rest(180); walk(1, 100); walk(-1, 100);   // 2 x 300 m climb, rest between
+  const kept = gate(raw);
+  const collapsed = dropStationary(kept);
+  assert.ok(collapsed.length < kept.length, 'rest was not detected');
+  const s = summarize(kept);
+  // reference: the identical track with the rest cut out (time shifted so the gate sees the same thing)
+  const noRest = gate([...raw.slice(0, restAt), ...raw.slice(restAt + 180).map(f => ({ ...f, t: f.t - 180000 }))]);
+  const ref = summarize(noRest).total_elevation_gain;
+  assert.ok(s.total_elevation_gain <= ref + 0.5, `rest leaked into gain: ${s.total_elevation_gain} vs ${ref} without the rest`);
+  assert.ok(s.total_elevation_gain >= ref - 6, `rest ate real gain: ${s.total_elevation_gain} vs ${ref}`);
+  // no episode: a real climb passes through untouched
+  const climb = Array.from({ length: 50 }, (_, i) => ({ lat: 47.05 + i * 15 / 111320, lon: 8.31, t: i * 10000, ele: 500 + i }));
+  assert.strictEqual(dropStationary(climb).length, 50);
+  console.log(`  2 hill repeats with a 3 min rest between: +${s.total_elevation_gain} m (${ref} without the rest), ${kept.length - collapsed.length} wander points dropped`);
+}
+
+// LV95: Bern old observatory is the datum origin, E 2600000 / N 1200000
+{
+  const [E, N] = wgs84ToLv95(46.951082877, 7.438632495);
+  assert.ok(Math.abs(E - 2600000) < 2 && Math.abs(N - 1200000) < 2, `lv95 ${E},${N}`);
 }
 
 // provider routing
