@@ -131,6 +131,23 @@ export function providerFor(lat, lon) {
 }
 
 /**
+ * The provider a track is locked to. Every national bounding box above is a
+ * rectangle and every one of them overhangs its border — the Spain box covers
+ * Portugal, Andorra and Perpignan; the Swiss box covers Como, Chamonix and
+ * Bregenz. There the service answers "no coverage" for every fix, which would
+ * leave the whole track empty. So the choice is probed once against the real
+ * service and falls back to the global tiles when the answer is no coverage.
+ * Only a coverage answer falls back: a timeout must not downgrade a whole ride
+ * in Spain because one request was slow.
+ */
+export async function lockProvider(lat, lon, probe) {
+  const want = providerFor(lat, lon);
+  if (want === 'terrarium') return want;
+  try { await probe(want, lat, lon); return want; }
+  catch (e) { return e.message === 'no coverage' ? 'terrarium' : want; }
+}
+
+/**
  * Interior points every ~`step` metres along the straight line a -> b, so the
  * terrain between two fixes can be scanned for a summit that fell between them.
  * ponytail: straight line in lat/lon; fixes are 10-30 m apart so a hairpin cuts

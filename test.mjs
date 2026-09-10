@@ -255,4 +255,22 @@ console.log('all checks passed');
   assert.strictEqual(providerFor(-33.86, 151.2), 'terrarium');    // Sydney
 }
 
+// Locking the provider: every national bbox overhangs its border, so a place the
+// box claims but the service does not cover must fall back to the global tiles
+// rather than leaving the track empty.
+{
+  const { lockProvider } = await import('./altitude.js');
+  const covered = async () => 100;
+  const uncovered = async () => { throw new Error('no coverage'); };
+  const offline = async () => { throw new Error('The operation was aborted due to timeout'); };
+
+  assert.strictEqual(await lockProvider(41.3874, 2.1686, covered), 'ign');            // Barcelona, real coverage
+  assert.strictEqual(await lockProvider(38.72, -9.14, uncovered), 'terrarium');       // Lisbon: inside the Spain box, not in IGN
+  assert.strictEqual(await lockProvider(45.81, 9.08, uncovered), 'terrarium');        // Como: inside the Swiss box, not in swissALTI3D
+  assert.strictEqual(await lockProvider(-33.86, 151.2, uncovered), 'terrarium');      // Sydney never probes at all
+  // a slow network is not a coverage answer: a Spanish ride must stay on IGN
+  assert.strictEqual(await lockProvider(41.3874, 2.1686, offline), 'ign');
+  console.log('  provider fallback: Lisbon/Como -> SRTM, Barcelona stays on IGN through a timeout');
+}
+
 console.log('gate checks passed');

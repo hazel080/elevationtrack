@@ -1,23 +1,47 @@
-# elevationtrack
+<h1 align="center">
+  <img src="icon-192.png" width="72" height="72" alt=""><br>
+  Altitrack
+</h1>
 
-Phone-based elevation-gain tracker. Records how much you climbed, independently
-of Strava, on any smartphone — no app install, no API key, no account.
+<p align="center">
+  Phone-based elevation-gain tracker. Records how much you climbed, independently
+  of Strava, on any smartphone — no app install, no API key, no account.
+</p>
 
-## Run it
+<p align="center">
+  <b><a href="https://hazel080.github.io/elevationtrack/">▲ &nbsp;Open the tracker</a></b>
+</p>
 
-    ./serve.sh
+<p align="center">
+  <sub>works worldwide · iOS + Android · nothing leaves the phone</sub>
+</p>
 
-Prints an `https://….trycloudflare.com` URL. Open it on the phone, allow
-location, press Start. HTTPS is required — browsers refuse geolocation otherwise.
+---
 
-    node test.mjs      # the validation suite
+## Use it
 
-## How it works
+**[hazel080.github.io/elevationtrack](https://hazel080.github.io/elevationtrack/)** — open
+it on the phone, allow location, press **Start**. That is the whole thing; there
+is nothing to sign up for.
 
-Elevation does **not** come from the phone's altimeter. Each GPS fix's lat/lon is
-looked up in a terrain model, smoothed, then accumulated with a threshold.
+**Keep it on the home screen** so it opens full-screen with its own icon:
 
-The model is chosen by location, because national LiDAR beats global SRTM badly:
+| iPhone | Android |
+|---|---|
+| Safari → **Share** → *Add to Home Screen* | Chrome → **⋮** → *Add to Home Screen* / *Install app* |
+
+**While recording,** leave the screen on (the app holds a wake lock) and keep the
+tab in front. Backgrounded browsers get their GPS throttled or suspended by both
+operating systems — that is a platform limit, not a setting.
+
+**Exports.** *Export GPX* gives a file Strava, Garmin Connect and Komoot import
+directly. *Export JSON* gives a Strava-activity-shaped payload — same field
+names, so it drops into an existing pipeline — plus the raw streams.
+
+### Where it works
+
+Everywhere. Elevation comes from a global terrain model, with two national LiDAR
+models used where they exist:
 
 | where | dataset | resolution |
 |---|---|---|
@@ -25,7 +49,36 @@ The model is chosen by location, because national LiDAR beats global SRTM badly:
 | Switzerland | swisstopo swissALTI3D | 0.5 m |
 | everywhere else | AWS Terrarium (SRTM) | ~30 m |
 
-It matters most in cities. SRTM is a *surface* model — it measures rooftops:
+The national choices are bounding boxes, and every bounding box overhangs its
+border — the Spanish one covers Portugal, Andorra and Perpignan; the Swiss one
+covers Como, Chamonix and Bregenz. So the choice is *probed* against the real
+service on the first fix and falls back to the global tiles where the national
+model has no coverage. Only a coverage answer falls back: a slow request must
+not downgrade a whole ride in Spain.
+
+## Develop it
+
+    ./serve.sh        # local server + HTTPS tunnel, for testing an unpushed change
+    node test.mjs     # the validation suite
+
+`serve.sh` prints an `https://….trycloudflare.com` URL. HTTPS is required —
+browsers refuse geolocation otherwise, which is also why the published copy
+lives on GitHub Pages. Pushing to `main` republishes it.
+
+## Privacy
+
+There is no backend. The track lives in the phone's `localStorage` and nowhere
+else. The only outbound requests are the terrain lookups — a coordinate goes to
+AWS, IGN or swisstopo to get a height back. Nothing is ever uploaded, and the
+exports are files the phone hands you.
+
+## How it works
+
+Elevation does **not** come from the phone's altimeter. Each GPS fix's lat/lon is
+looked up in a terrain model, smoothed, then accumulated with a threshold.
+
+The model is chosen by location (see [Where it works](#where-it-works)), because
+national LiDAR beats global SRTM badly. It matters most in cities. SRTM is a *surface* model — it measures rooftops:
 
 | Barcelona | IGN 5 m | SRTM 30 m | actual |
 |---|---|---|---|
@@ -93,6 +146,7 @@ the asymmetry: never above truth, never more than 2.5% below on hills.
 | `test.mjs`    | Validation suite. |
 | `serve.sh`    | Local server + HTTPS tunnel. |
 | `compare.mjs` | Re-derives a track's gain from 4 terrain datasets and 3 algorithms. |
+| `manifest.webmanifest`, `icon-*.png` | Home-screen install. No service worker: every fix needs a live terrain lookup, so an offline shell would only cache a screen that cannot record anything. |
 
 ## Validating it — what to compare against
 

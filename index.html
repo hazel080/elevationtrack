@@ -2,6 +2,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Altitrack</title>
+<meta name="description" content="Elevation-gain tracker for any phone. Terrain-model based, no app install, no account.">
+<!-- Add to Home Screen: opens full-screen with its own icon, no browser chrome.
+     ponytail: no service worker — every fix needs a live terrain lookup, so an
+     offline shell would only cache a screen that cannot record anything. -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Altitrack">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
 <style>
   :root {
     color-scheme: light;
@@ -102,7 +114,7 @@
 
 
 <script type="module">
-import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor, wgs84ToLv95, segmentSamples } from './altitude.js';
+import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor, lockProvider, wgs84ToLv95, segmentSamples } from './altitude.js';
 
 const Z = 13;                 // ~13 m/px at 47°N — finer than SRTM's real 30 m
 
@@ -176,15 +188,19 @@ async function terrainAt(lat, lon) {
 
 // The provider is locked for the whole track: two datasets disagree by metres at
 // the same coordinate, so switching mid-ride would book that as real climbing.
-// If the chosen provider fails, the fix is SKIPPED rather than filled from
-// another source.
+// If the chosen provider fails after that, the fix is SKIPPED rather than
+// filled from another source.
+const SERVICE = { ign: ignElevationAt, swisstopo: swisstopoElevationAt, terrarium: terrainAt };
+const LABEL = { ign: 'IGN 5 m LiDAR', swisstopo: 'swisstopo LiDAR', terrarium: 'SRTM 30 m' };
 let provider = null;
 async function elevationAt(lat, lon) {
-  const p0 = points[0] ?? { lat, lon };   // after a reload, re-derive from where the track STARTED
-  provider ??= providerFor(p0.lat, p0.lon);
-  if (provider === 'ign') return ignElevationAt(lat, lon);
-  if (provider === 'swisstopo') return swisstopoElevationAt(lat, lon);
-  return terrainAt(lat, lon);
+  if (!provider) {
+    const p0 = points[0] ?? { lat, lon };   // after a reload, re-derive from where the track STARTED
+    provider = await lockProvider(p0.lat, p0.lon, (name) => SERVICE[name](lat, lon));
+    if (provider !== providerFor(p0.lat, p0.lon)) log('national model does not cover this spot — using SRTM');
+    $('src').textContent = LABEL[provider];
+  }
+  return SERVICE[provider](lat, lon);
 }
 
 // ---- track state ----
@@ -254,8 +270,6 @@ async function onFix(pos) {
       for (const x of r) if (x.status === 'fulfilled' && Number.isFinite(x.value)) { hi = Math.max(hi ?? -Infinity, x.value); lo = Math.min(lo ?? Infinity, x.value); }
     }
     points.push({ ...fix, ele, hi, lo, devEle });
-    $('src').textContent = provider === 'ign' ? 'IGN 5 m LiDAR'
-                         : provider === 'swisstopo' ? 'swisstopo LiDAR' : 'SRTM 30 m';
     setStatus('moving');
     render();
   } catch (e) { setStatus('terrain lookup failed'); log('terrain error: ' + e.message); }
