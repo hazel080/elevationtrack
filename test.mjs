@@ -273,4 +273,47 @@ console.log('all checks passed');
   console.log('  provider fallback: Lisbon/Como -> SRTM, Barcelona stays on IGN through a timeout');
 }
 
+// Stair counting. Synthetic accelerometer at 50 Hz: gravity on one axis (the
+// phone lies at an angle, as it does in a pocket) plus a vertical footfall
+// oscillation. Steps must be counted; a still phone, a shaken one and a walk
+// with the wrong cadence must all book nothing.
+{
+  const { stairCounter, RISER } = await import('./altitude.js');
+  const HZ = 50, G = 9.81;
+  // gravity split over two axes: nothing may assume the phone is upright
+  const gx = G * 0.6, gz = G * 0.8;
+  const feed = (c, secs, accelAt) => {
+    for (let i = 0; i <= secs * HZ; i++) {
+      const t = i / HZ, a = accelAt(t);
+      // the footfall acts along gravity, i.e. vertically
+      c.push(t, gx + a * 0.6, 0, gz + a * 0.8);
+    }
+  };
+  const noise = (t) => Math.sin(t * 991.7) * 0.05;   // deterministic, ±5 cm/s²
+
+  // 40 steps at 1.7 Hz, footfall peaks of 3 m/s² — a normal stair cadence
+  const cad = 1.7, secs = 40 / cad;
+  const climb = stairCounter();
+  feed(climb, secs, t => 3 * Math.sin(2 * Math.PI * cad * t) + noise(t));
+  assert.ok(Math.abs(climb.steps - 40) <= 2, `stair steps ${climb.steps}, expected ~40`);
+  assert.ok(Math.abs(climb.gain - 40 * RISER) < 0.4, `stair gain ${climb.gain}`);
+
+  // a phone lying on a desk books nothing
+  const still = stairCounter();
+  feed(still, 60, t => noise(t));
+  assert.strictEqual(still.steps, 0, 'a still phone counted steps');
+
+  // isolated jolts book nothing: no cadence, no metres
+  const jolt = stairCounter();
+  feed(jolt, 30, t => (Math.abs(t % 5) < 0.06 ? 12 : 0) + noise(t));
+  assert.strictEqual(jolt.steps, 0, 'isolated jolts counted as steps');
+
+  // a hand wave far faster than any staircase is refused by the refractory gap
+  const shake = stairCounter();
+  feed(shake, 20, t => 9 * Math.sin(2 * Math.PI * 6 * t));
+  assert.strictEqual(shake.steps, 0, `shaking counted ${shake.steps} steps`);
+
+  console.log(`  stairs: ${climb.steps}/40 steps counted = +${climb.gain.toFixed(1)} m; still/jolt/shake all 0`);
+}
+
 console.log('gate checks passed');

@@ -200,6 +200,73 @@ export function wgs84ToLv95(lat, lon) {
   ];
 }
 
+/**
+ * A stair riser, in metres. This is the one number in the app that does not
+ * need measuring: risers are legislated almost everywhere and land in a narrow
+ * band — 17-18 cm across most of the EU, 7 in (17.8 cm) in the US IBC, 18 cm
+ * in the UK. So a counted stair step is worth 0.17 m to within a few percent
+ * anywhere in the world, which is better than any accelerometer can estimate a
+ * single step's height (published errors are ~30%).
+ */
+export const RISER = 0.17;
+
+/**
+ * Steps, from the accelerometer. No terrain model can see a staircase — a
+ * stairwell is one lat/lon for twenty floors, and a flight's horizontal
+ * movement is below the GPS movement gate — and no browser on either platform
+ * exposes a barometer. Counting footfalls is what is left, and it is the part
+ * of the problem that is genuinely reliable.
+ *
+ * Gravity is tracked as a slow EMA of the raw vector, so the phone can sit in
+ * any pocket at any angle; the dynamic acceleration along that axis is what a
+ * footfall shows up in. A peak above `peakAcc` books a step, with a refractory
+ * gap so one footfall's ringing is not two.
+ *
+ * `maxStep` is the integrity gate: a step only counts when it follows another
+ * step within a walking cadence. An isolated jolt — the phone slapping a leg,
+ * being pulled out of a pocket, a car's pothole — books nothing, so the height
+ * cannot be manufactured by shaking. The cost is the first step of every flight,
+ * ~17 cm, which is the right direction to be wrong in.
+ *
+ * Direction is NOT inferred. Telling stairs from a flat corridor, and up from
+ * down, is ~85-90% accurate at best from acceleration alone, and a wrong metre
+ * is the one failure this app exists to avoid. The user says when they are
+ * climbing; the app only counts.
+ */
+export function stairCounter({ riser = RISER, minStep = 0.28, maxStep = 1.6, peakAcc = 1.8, tau = 0.8 } = {}) {
+  let g = null, tPrev = null, tPeak = null, tStep = null, above = false, steps = 0;
+  return {
+    get steps() { return steps; },
+    get gain() { return steps * riser; },
+    reset() { g = null; tPrev = tPeak = tStep = null; above = false; steps = 0; },
+    /** t in SECONDS; x,y,z acceleration INCLUDING gravity, m/s^2. True when this sample booked a step. */
+    push(t, x, y, z) {
+      // A gap in the stream leaves the EMA stale and the cadence chain broken.
+      if (tPrev == null || !(t > tPrev) || t - tPrev > 0.5) { g = [x, y, z]; tPrev = t; tStep = tPeak = null; return false; }
+      const dt = t - tPrev; tPrev = t;
+      const k = 1 - Math.exp(-dt / tau);
+      g = [g[0] + k * (x - g[0]), g[1] + k * (y - g[1]), g[2] + k * (z - g[2])];
+      const gm = Math.hypot(g[0], g[1], g[2]);
+      if (!(gm > 1)) return false;                       // free fall or a dead sensor
+      const a = (x * g[0] + y * g[1] + z * g[2]) / gm - gm;   // vertical, gravity removed, up positive
+      if (a < peakAcc * 0.4) { above = false; return false; } // re-arm well below the threshold
+      if (above || a < peakAcc) return false;
+      above = true;
+      // Refractory. It suppresses without touching the cadence chain, so one
+      // footfall's ringing costs nothing — and a shake far faster than any
+      // staircase keeps re-triggering it and never emits a step at all.
+      const since = tPeak == null ? Infinity : t - tPeak;
+      tPeak = t;
+      if (since < minStep) return false;
+      const gap = tStep == null ? null : t - tStep;
+      tStep = t;
+      if (gap == null || gap > maxStep) return false;    // start of a rhythm, or after a pause
+      steps++;
+      return true;
+    },
+  };
+}
+
 export function haversine(a, b) {
   const R = 6371000, rad = Math.PI / 180;
   const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;

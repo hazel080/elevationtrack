@@ -4,8 +4,9 @@
 </h1>
 
 <p align="center">
-  Phone-based elevation-gain tracker. Records how much you climbed, independently
-  of Strava, on any smartphone — no app install, no API key, no account.
+  Elevation-gain tracker that runs in the browser of any phone, anywhere in the
+  world. Records how much you climbed — on roads, on trails, and up stairs —
+  with no app install, no API key and no account.
 </p>
 
 <p align="center">
@@ -13,82 +14,126 @@
 </p>
 
 <p align="center">
-  <sub>works worldwide · iOS + Android · nothing leaves the phone</sub>
+  <sub>every country · iOS + Android · nothing leaves the phone</sub>
 </p>
 
 ---
 
-## Use it
+## Try it
 
-**[hazel080.github.io/elevationtrack](https://hazel080.github.io/elevationtrack/)** — open
-it on the phone, allow location, press **Start**. That is the whole thing; there
-is nothing to sign up for.
+**[hazel080.github.io/elevationtrack](https://hazel080.github.io/elevationtrack/)**
 
-**Keep it on the home screen** so it opens full-screen with its own icon:
+That link is the whole product. There is nothing to install, no account, no key,
+and nothing to configure — open it on a phone, allow location, press **Start**.
+Send the link to anyone and they have the same tool.
+
+Indoors, at a desk, with no GPS? Press **Demo track** and the display fills with a
+recorded climb run through the real accumulator, so the numbers and both exports
+can be inspected without going outside.
+
+**Keep it on the home screen** and it opens full-screen with its own icon, like
+any other app:
 
 | iPhone | Android |
 |---|---|
 | Safari → **Share** → *Add to Home Screen* | Chrome → **⋮** → *Add to Home Screen* / *Install app* |
 
-**While recording,** leave the screen on (the app holds a wake lock) and keep the
-tab in front. Backgrounded browsers get their GPS throttled or suspended by both
-operating systems — that is a platform limit, not a setting.
+**While recording,** leave the screen on — the app holds a wake lock — and keep
+the tab in front. Backgrounded browsers get their GPS throttled or suspended by
+both operating systems; that is a platform limit, not a setting.
 
 **Exports.** *Export GPX* gives a file Strava, Garmin Connect and Komoot import
 directly. *Export JSON* gives a Strava-activity-shaped payload — same field
 names, so it drops into an existing pipeline — plus the raw streams.
 
-### Where it works
+## Where it works
 
-Everywhere. Elevation comes from a global terrain model, with two national LiDAR
-models used where they exist:
+**Everywhere on Earth.** Elevation comes from a global terrain model — AWS
+Terrarium, ~30 m, covering every land surface between 85°N and 85°S — reached
+over plain HTTPS with no key and no quota. There is no country list, no
+region setting and no place the app has to be told about.
+
+On top of that, where a national survey publishes something better, the app
+uses it:
 
 | where | dataset | resolution |
 |---|---|---|
+| **everywhere** | AWS Terrarium (SRTM/GMTED) | ~30 m |
 | Spain | IGN MDT (PNOA LiDAR) | 5 m |
 | Switzerland | swisstopo swissALTI3D | 0.5 m |
-| everywhere else | AWS Terrarium (SRTM) | ~30 m |
+
+Those two are a bonus on top of the worldwide path, not a requirement for it —
+nothing degrades outside them beyond the resolution of the global model, and
+adding a third is a bounding box and a fetch in `altitude.js`.
 
 The national choices are bounding boxes, and every bounding box overhangs its
-border — the Spanish one covers Portugal, Andorra and Perpignan; the Swiss one
-covers Como, Chamonix and Bregenz. So the choice is *probed* against the real
-service on the first fix and falls back to the global tiles where the national
-model has no coverage. Only a coverage answer falls back: a slow request must
-not downgrade a whole ride in Spain.
+border: the Spanish one reaches Portugal, Andorra and Perpignan, the Swiss one
+reaches Como, Chamonix and Bregenz. So the choice is *probed* against the real
+service on the first fix and falls back to the global model wherever the
+national one has no coverage. Only a coverage answer falls back — a slow
+request must not quietly downgrade a whole ride.
 
-## Develop it
+## Stairs
 
-    ./serve.sh        # local server + HTTPS tunnel, for testing an unpushed change
-    node test.mjs     # the validation suite
+A staircase is invisible to everything above. A terrain model returns one ground
+height for an entire stairwell, a flight's horizontal movement is smaller than
+the GPS movement gate, and **no browser on either platform exposes a barometer**
+— iOS and Android both refuse the pressure sensor to web pages. So stairs are
+counted footfall by footfall from the accelerometer.
 
-`serve.sh` prints an `https://….trycloudflare.com` URL. HTTPS is required —
-browsers refuse geolocation otherwise, which is also why the published copy
-lives on GitHub Pages. Pushing to `main` republishes it.
+Press **Stairs** at the bottom of the flight, press it again at the top. Every
+step counted books **0.17 m**, and the total joins the climb on the main display.
+
+Two deliberate choices:
+
+- **The height is not measured, it is known.** Estimating a single step's rise by
+  integrating acceleration is published at roughly ±30% error. A stair riser, on
+  the other hand, is legislated into a narrow band nearly everywhere — 17-18 cm
+  across most of the EU, 7 in (17.8 cm) under the US IBC, 18 cm in the UK — so
+  counting steps and multiplying is the far more accurate of the two.
+- **The direction is yours to state, not the app's to guess.** Telling stairs
+  from a flat corridor, and up from down, is 85-90% accurate at best from
+  acceleration alone. A wrong metre is the one failure this project exists to
+  avoid, so the app never guesses: it counts only while you have said you are
+  climbing.
+
+A step also only counts when it follows another step at a walking cadence, so an
+isolated jolt — the phone slapping a leg, coming out of a pocket, a pothole —
+books nothing, and shaking the phone books nothing. The cost is the first step of
+each flight, about 17 cm, which is the right direction to be wrong in.
+
+## Which phones and browsers
+
+Any phone with a GPS and a browser from roughly 2021 onward. It is one HTML file
+and one ES-module — no framework, no build step, no bundle.
+
+- **iOS** Safari, Chrome, Firefox, Edge (all iOS browsers are Safari underneath).
+  Stairs needs *Settings → Safari → Motion & Orientation Access* on, and the app
+  asks for it when you press Stairs.
+- **Android** Chrome, Firefox, Samsung Internet, Edge.
+- **Desktop** works too, for reading a track and exporting it.
+
+Nothing depends on a recent browser: `OffscreenCanvas`, `createImageBitmap` and
+`AbortSignal.timeout` all have fallbacks, because they landed in Safari only in
+16.4 / 15 / 15.4 and a lot of phones in use are older than that. `localStorage`
+failing outright — as it does in some private-browsing modes — degrades to a
+track that records normally but is not saved across a reload.
+
+The one hard requirement is **HTTPS**: browsers refuse geolocation on plain
+`http://`. The published copy is served over HTTPS, so this only matters if you
+host it yourself.
 
 ## Privacy
 
-There is no backend. The track lives in the phone's `localStorage` and nowhere
-else. The only outbound requests are the terrain lookups — a coordinate goes to
-AWS, IGN or swisstopo to get a height back. Nothing is ever uploaded, and the
-exports are files the phone hands you.
+There is no backend and no account. The track lives in the phone's
+`localStorage` and nowhere else. The only outbound requests are terrain
+lookups — a coordinate goes out, a height comes back. Nothing is uploaded, and
+the exports are files the phone hands you.
 
 ## How it works
 
 Elevation does **not** come from the phone's altimeter. Each GPS fix's lat/lon is
 looked up in a terrain model, smoothed, then accumulated with a threshold.
-
-The model is chosen by location (see [Where it works](#where-it-works)), because
-national LiDAR beats global SRTM badly. It matters most in cities. SRTM is a *surface* model — it measures rooftops:
-
-| Barcelona | IGN 5 m | SRTM 30 m | actual |
-|---|---|---|---|
-| Tibidabo | 511.8 m | 512 m | ~512 |
-| Montjuïc | 171.7 m | 180 m | ~173 |
-| Plaça Catalunya | 21.1 m | 33 m | ~20 |
-
-A track stays on **one** provider start to finish. Two datasets disagree by
-metres at the same coordinate, so switching mid-ride would book that
-disagreement as real climbing. If the provider fails, the fix is skipped.
 
 This is Strava's own method for activities recorded without a barometer, and it
 buys two things:
@@ -98,6 +143,11 @@ buys two things:
 - **Saw-toothing is structurally impossible.** The same coordinate always returns
   the same elevation, so GPS noise cannot manufacture metres that were never
   climbed — the fraud that currently needs a human reviewer.
+
+A track stays on **one** provider start to finish. Two datasets disagree by
+metres at the same coordinate, so switching mid-ride would book that
+disagreement as real climbing. If the provider fails mid-track, the fix is
+skipped.
 
 Every fix passes a gate before reaching the math: cold-start settling, a movement
 gate at `1.5 × GPS accuracy`, a Doppler-speed gate (`coords.speed` reads ~0 while
@@ -115,6 +165,22 @@ Without all of this, standing still on a 30% slope for 50 minutes fabricates
 ~175 m; with it, 0 m in the synthetic test, and 0 on any phone that reports
 Doppler speed regardless of terrain. The remaining exposure is a receiver that
 drifts more than 40 m while reporting 20 m accuracy on a steep slope.
+
+### Why the national models are worth the special case
+
+The global model is a *surface* model: it measures rooftops and tree canopy, not
+the ground you walk on. The error is largest in dense cities, which is exactly
+where a lot of riding happens. Barcelona, as a worked example, against the 5 m
+LiDAR terrain model of the same points:
+
+| | LiDAR 5 m | global 30 m | surveyed |
+|---|---|---|---|
+| Tibidabo | 511.8 m | 512 m | ~512 |
+| Montjuïc | 171.7 m | 180 m | ~173 |
+| Plaça Catalunya | 21.1 m | 33 m | ~20 |
+
+Open country is far kinder to the global model — the 7 m error at Plaça
+Catalunya is a building, not terrain.
 
 ## Accuracy
 
@@ -137,17 +203,6 @@ rolling terrain) — a bias that grew with the number of extrema, so it could no
 be calibrated out. Overcounting is an integrity failure, so `test.mjs` enforces
 the asymmetry: never above truth, never more than 2.5% below on hills.
 
-## Files
-
-| | |
-|---|---|
-| `altitude.js` | All the math. Pure — no DOM, no network. |
-| `index.html`  | The tracker UI. |
-| `test.mjs`    | Validation suite. |
-| `serve.sh`    | Local server + HTTPS tunnel. |
-| `compare.mjs` | Re-derives a track's gain from 4 terrain datasets and 3 algorithms. |
-| `manifest.webmanifest`, `icon-*.png` | Home-screen install. No service worker: every fix needs a live terrain lookup, so an offline shell would only cache a screen that cannot record anything. |
-
 ## Validating it — what to compare against
 
 **There is no single true elevation-gain number.** Strava, Garmin and Google all
@@ -156,13 +211,13 @@ disagree, because each derives elevation from a different terrain dataset. Run
 
     node compare.mjs track.json [--truth 350]
 
-The same 150-point ascent, same algorithm, four independent terrain datasets:
+The same 150-point ascent, same algorithm, three independent terrain datasets:
 
 | terrain source | gain |
 |---|---|
 | mapzen / SRTM | 1275 m |
 | eudem25m | 1230 m |
-| swisstopo LiDAR 0.5 m | 1311 m |
+| national LiDAR 0.5 m | 1311 m |
 
 **6.5% spread from the data alone.** No algorithm can be more consistent than
 the terrain data underneath it, so "matches Strava exactly" is not a
@@ -170,33 +225,62 @@ reachable target — and not the right one.
 
 ### The one reference that is not an estimate
 
-Pick a route that is **one continuous climb** — no rolling, no descent — and take
-the surveyed elevation of its start and end points. The difference is the true
-gain, and no smoothing or threshold choice can influence it. Then:
+This works in any country, and needs nothing but a map:
 
-1. Walk it once, recording with this app.
-2. `node compare.mjs track.json --truth <surveyed delta>`
+1. Pick a route that is **one continuous climb** — no rolling, no descent — whose
+   start and end points both have a *surveyed* elevation: a trig point, a
+   benchmark, a spot height on the national topographic map, a station or summit
+   sign. The difference between them is the true gain, and no smoothing or
+   threshold choice can influence it.
+2. Walk it once, recording with this app.
+3. `node compare.mjs track.json --truth <surveyed delta>`
 
-`compare.mjs` prints the surveyed endpoint difference automatically in Spain and
-Switzerland. Elsewhere, use your national mapping agency or trig-point markers.
+Then repeat the same climb five times in one recording. True gain is 5× the
+delta. That is the test that matters, because it exercises the accumulator the
+way an Everesting does.
 
-**Barcelona reference route:** Plaça Espanya → Castell de Montjuïc.
-IGN surveys those endpoints at 26.6 m and 184.1 m — a **157.6 m** true climb,
-continuous, walkable in about 25 minutes. Measured on that route with the
-previous (smoothed-amplitude) accumulator, this app read **155 m: 1.6% low**.
-Not yet re-walked with the current one.
+`compare.mjs` prints the surveyed endpoint difference automatically where a
+national height service exists (currently Spain and Switzerland). Everywhere
+else, read the two numbers off your national mapping agency's map — every
+country has one, and spot heights are exactly what they are for.
 
-Then repeat the same climb 5 times in one recording. True gain is 5x the delta.
-That is the test that matters, because it exercises the accumulator the way an
-Everesting does.
+*A worked example, if you want one that is already measured:* Plaça Espanya →
+Castell de Montjuïc, Barcelona. IGN surveys the endpoints at 26.6 m and
+184.1 m — a **157.6 m** true climb, continuous, about 25 minutes on foot. On the
+previous (smoothed-amplitude) accumulator this app read **155 m: 1.6% low**. Not
+yet re-walked with the current one.
+
+For stairs, the equivalent reference is trivial: count the steps in the flight by
+hand, multiply by the measured riser, and compare.
+
+## Files
+
+| | |
+|---|---|
+| `altitude.js` | All the math — terrain accumulation, gating, step counting. Pure: no DOM, no network. |
+| `index.html`  | The tracker UI. |
+| `test.mjs`    | Validation suite. |
+| `serve.sh`    | Local server + HTTPS tunnel. |
+| `compare.mjs` | Re-derives a track's gain from 4 terrain datasets and 3 algorithms. |
+| `manifest.webmanifest`, `icon-*.png` | Home-screen install. No service worker: every fix needs a live terrain lookup, so an offline shell would only cache a screen that cannot record anything. |
 
 ## Calibration
 
-Six constants in `altitude.js` are the whole tuning surface:
+Seven constants in `altitude.js` are the whole tuning surface:
 `window = 5` (direction smoothing), `threshold = 10` (metres before a climb
 counts), `accFactor = 1.5` (movement gate), `minSpeed = 0.3` m/s (Doppler gate),
-`radius = 40` / `minTime = 120` (stationary episode).
+`radius = 40` / `minTime = 120` (stationary episode), and `RISER = 0.17` (metres
+per stair step — the one to change for an unusually steep or shallow staircase).
 Tune against a real ride recorded alongside Strava.
+
+## Develop it
+
+    ./serve.sh        # local server + HTTPS tunnel, for testing an unpushed change
+    node test.mjs     # the validation suite
+
+`serve.sh` prints an `https://….trycloudflare.com` URL, which a phone can use
+because it is HTTPS. Pushing to `main` republishes the public copy on GitHub
+Pages.
 
 ## Not done yet
 

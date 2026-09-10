@@ -79,7 +79,8 @@
     letter-spacing: .16em; text-transform: uppercase;
     -webkit-tap-highlight-color: transparent;
   }
-  button.go { background: var(--fg); color: var(--bg); }
+  button.go, button.on { background: var(--fg); color: var(--bg); }
+  button:disabled { color: var(--dim); border-color: var(--dim); }
   .row { display: flex; gap: var(--u); }
 
   #log {
@@ -100,26 +101,60 @@
   <div class="cell"><i>Distance</i><b id="dist">0.00 km</b></div>
   <div class="cell"><i>GPS accuracy</i><b id="acc">–</b></div>
   <div class="cell"><i>Track points</i><b id="pts">0</b></div>
-  <div class="cell"><i>Started at</i><b id="start">–</b></div>
+  <div class="cell"><i>Stairs</i><b id="stairs">–</b></div>
   <div class="cell"><i>Status</i><b id="status">idle</b></div>
 </div>
 
 <button id="toggle" class="go">Start</button>
+<button id="stairsBtn">Stairs — off</button>
 <div class="row">
   <button id="gpx">Export GPX</button>
   <button id="json">Export JSON</button>
 </div>
-<button id="reset">Reset</button>
+<div class="row">
+  <button id="demo">Demo track</button>
+  <button id="reset">Reset</button>
+</div>
 <div id="log"></div>
 
 
 <script type="module">
-import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor, lockProvider, wgs84ToLv95, segmentSamples } from './altitude.js';
+import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor, lockProvider, wgs84ToLv95, segmentSamples, stairCounter, RISER } from './altitude.js';
 
 const Z = 13;                 // ~13 m/px at 47°N — finer than SRTM's real 30 m
 
 const $ = id => document.getElementById(id);
 const log = m => { $('log').textContent = `${new Date().toLocaleTimeString()}  ${m}\n` + $('log').textContent; };
+
+// ---- shims. The point of a web app is that it runs on the phone people
+// already have, so nothing here may depend on a recent browser. ----
+
+// localStorage throws outright in some private-browsing modes and when the
+// quota is full; a track that cannot be saved must still be recordable.
+const store = {
+  get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+// AbortSignal.timeout: Safari 15.4+, Chrome 103+.
+const timeout = (ms) => {
+  if (AbortSignal.timeout) return AbortSignal.timeout(ms);
+  const c = new AbortController(); setTimeout(() => c.abort(), ms); return c.signal;
+};
+// OffscreenCanvas only reached Safari in 16.4, which rules out a lot of iPhones.
+const context2d = (w, h) => {
+  const c = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(w, h)
+    : Object.assign(document.createElement('canvas'), { width: w, height: h });
+  return c.getContext('2d', { willReadFrequently: true });
+};
+const toImage = async (blob) => {
+  if (typeof createImageBitmap === 'function') return createImageBitmap(blob);
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.src = url;
+  await (img.decode ? img.decode() : new Promise((ok, no) => { img.onload = ok; img.onerror = no; }));
+  setTimeout(() => URL.revokeObjectURL(url));
+  return img;
+};
 
 // ---- DEM tiles (AWS Terrarium, no API key, CORS-open) ----
 const tiles = new Map();      // "x/y" -> Float32Array(256*256) | Promise
@@ -128,12 +163,10 @@ async function loadTile(tx, ty) {
   if (tiles.has(key)) return tiles.get(key);
   const p = (async () => {
     const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${Z}/${tx}/${ty}.png`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url, { signal: timeout(15000) });
     if (!res.ok) throw new Error(`tile ${key} HTTP ${res.status}`);
-    const bmp = await createImageBitmap(await res.blob());
-    const c = new OffscreenCanvas(256, 256);
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bmp, 0, 0);
+    const ctx = context2d(256, 256);
+    ctx.drawImage(await toImage(await res.blob()), 0, 0);
     const { data } = ctx.getImageData(0, 0, 256, 256);
     const out = new Float32Array(256 * 256);
     for (let i = 0; i < out.length; i++) out[i] = decodeTerrarium(data[i*4], data[i*4+1], data[i*4+2]);
@@ -160,7 +193,7 @@ async function ignElevationAt(lat, lon) {
     crs: 'EPSG:4326', bbox: `${lat-d},${lon-d},${lat+d},${lon+d}`,
     width: '3', height: '3', i: '1', j: '1', info_format: 'text/plain',
   });
-  const txt = await (await fetch('https://servicios.idee.es/wms-inspire/mdt?' + q, { signal: AbortSignal.timeout(8000) })).text();
+  const txt = await (await fetch('https://servicios.idee.es/wms-inspire/mdt?' + q, { signal: timeout(8000) })).text();
   const m = txt.match(/GRAY_INDEX\s*=\s*(-?[\d.]+)/);
   const v = m ? Number(m[1]) : NaN;
   if (!Number.isFinite(v) || v < -50 || v > 4000) throw new Error('no coverage');
@@ -171,7 +204,7 @@ async function ignElevationAt(lat, lon) {
 async function swisstopoElevationAt(lat, lon) {
   const [E, N] = wgs84ToLv95(lat, lon);
   const url = `https://api3.geo.admin.ch/rest/services/height?easting=${E.toFixed(1)}&northing=${N.toFixed(1)}&sr=2056`;
-  const v = Number((await (await fetch(url, { signal: AbortSignal.timeout(8000) })).json()).height);
+  const v = Number((await (await fetch(url, { signal: timeout(8000) })).json()).height);
   if (!Number.isFinite(v)) throw new Error('no coverage');
   return v;
 }
@@ -204,7 +237,8 @@ async function elevationAt(lat, lon) {
 }
 
 // ---- track state ----
-let points = JSON.parse(localStorage.getItem('altitrack') || '[]');
+let points = store.get('altitrack', []);
+let steps = store.get('altitrack.steps', 0);   // stair steps climbed, booked at RISER each
 let watchId = null, wakeLock = null, timer = null;
 let settling = [];            // fixes held until GPS agrees with itself
 let settled = false;          // reset on every Start: a resumed track cold-starts too
@@ -213,17 +247,21 @@ let rejected = 0;
 
 function render() {
   const s = summarize(points);
-  $('up').textContent   = Math.round(s.total_elevation_gain);
+  // The headline is everything climbed: terrain under the GPS track, plus the
+  // staircases the terrain cannot see. Stairs never book descent — nothing
+  // reliable tells an accelerometer which way a step went, so nothing is claimed.
+  $('up').textContent   = Math.round(s.total_elevation_gain + steps * RISER);
   $('down').textContent = '−' + Math.round(s.total_elevation_loss);
   $('dist').textContent = (s.distance / 1000).toFixed(2) + ' km';
   $('pts').textContent  = points.length;
+  $('stairs').textContent = steps ? `${steps} · +${(steps * RISER).toFixed(1)} m` : '–';
   const last = points.at(-1);
   if (last) {
-    $('ele').textContent   = Math.round(last.ele) + ' m';
-    $('acc').textContent   = Math.round(last.acc) + ' m';
-    $('start').textContent = Math.round(points[0].ele) + ' m';
+    $('ele').textContent = Math.round(last.ele) + ' m';
+    $('acc').textContent = Math.round(last.acc) + ' m';
   }
-  localStorage.setItem('altitrack', JSON.stringify(points));
+  store.set('altitrack', points);
+  store.set('altitrack.steps', steps);
 }
 
 const setStatus = (t) => { $('status').textContent = t; };
@@ -287,6 +325,55 @@ function onGpsError(e) {
   else log('GPS error: ' + e.message);
 }
 
+// ---- stairs ----
+// A staircase is invisible to every input this app otherwise has: a terrain
+// model returns one ground height for a whole stairwell, a flight's horizontal
+// movement is below the GPS movement gate, and no browser on either platform
+// exposes a barometer. So stairs are counted footfall by footfall, and the
+// direction — which acceleration alone gets wrong often enough to matter — is
+// the user's to state by turning this on while climbing.
+const stairs = stairCounter();
+let stairsOn = false, motionSeen = false;
+
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;   // `acceleration` is null on many Android devices
+  if (!a || a.x == null) return;
+  motionSeen = true;
+  // The event's own timestamp, not the clock at handler time: a terrain fetch
+  // can stall the main thread and deliver a burst of samples at once, and
+  // dating them all "now" would collapse a whole flight into one instant.
+  // Only deltas are used, so it does not matter what the origin is.
+  const t = (e.timeStamp > 0 ? e.timeStamp : performance.now()) / 1000;
+  if (stairs.push(t, a.x, a.y, a.z)) { steps++; render(); }
+}
+
+async function toggleStairs() {
+  if (stairsOn) {
+    window.removeEventListener('devicemotion', onMotion);
+    stairsOn = false;
+    $('stairsBtn').textContent = 'Stairs — off';
+    $('stairsBtn').classList.remove('on');
+    log(`stairs off — ${steps} steps, +${(steps * RISER).toFixed(1)} m`);
+    return;
+  }
+  if (typeof DeviceMotionEvent === 'undefined') return log('this browser exposes no motion sensor');
+  // iOS 13+ demands an explicit grant, and only from inside a tap handler.
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    try {
+      if (await DeviceMotionEvent.requestPermission() !== 'granted') return log('motion access denied — Settings > Safari > Motion & Orientation Access');
+    } catch { return log('motion access needs a direct tap on Stairs'); }
+  }
+  stairs.reset();
+  motionSeen = false;
+  window.addEventListener('devicemotion', onMotion);
+  stairsOn = true;
+  $('stairsBtn').textContent = 'Stairs — counting';
+  $('stairsBtn').classList.add('on');
+  log(`stairs on — every step counts ${RISER} m. Turn it off before you come back down.`);
+  setTimeout(() => { if (stairsOn && !motionSeen) log('no motion data arriving — this device has no accelerometer'); }, 3000);
+}
+$('stairsBtn').onclick = toggleStairs;
+
 const holdWakeLock = async () => { try { wakeLock = await navigator.wakeLock.request('screen'); } catch {} };
 document.addEventListener('visibilitychange', () => { if (watchId != null && document.visibilityState === 'visible') holdWakeLock(); });
 
@@ -303,6 +390,7 @@ async function start() {
   log('tracking');
 }
 function stop() {
+  if (stairsOn) toggleStairs();
   navigator.geolocation.clearWatch(watchId); watchId = null;
   wakeLock?.release(); wakeLock = null;
   clearInterval(timer);
@@ -312,18 +400,41 @@ function stop() {
 }
 $('toggle').onclick = () => {
   if (watchId != null) return stop();
-  if (points.length && !confirm(`Continue the existing track (${Math.round(summarize(points).total_elevation_gain)} m climbed)?\n\nCancel = start a new one.`)) {
-    points = []; rejected = 0; provider = null; render();
-    ['ele','start'].forEach(k => $(k).textContent = '–');
-    log('new track');
+  if (points.length + steps && !confirm(`Continue the existing track (${Math.round(summarize(points).total_elevation_gain + steps * RISER)} m climbed)?\n\nCancel = start a new one.`)) {
+    clearTrack(); log('new track');
   }
   start();
 };
+function clearTrack() {
+  points = []; settling = []; rejected = 0; provider = null; steps = 0; stairs.reset();
+  $('ele').textContent = '–'; $('acc').textContent = '–';
+  $('src').textContent = 'terrain model';
+  render();
+}
 $('reset').onclick = () => {
   if (!confirm('Discard track?')) return;
-  points = []; settling = []; rejected = 0; provider = null; render();
-  ['ele','start'].forEach(k => $(k).textContent = '–');
-  setStatus('idle'); log('reset');
+  clearTrack(); setStatus('idle'); log('reset');
+};
+
+// Something to look at without going outside first: a recorded shape replayed
+// through the real accumulator, so the numbers and both exports can be checked
+// from a desk. Clearly labelled — none of it is a live reading.
+$('demo').onclick = () => {
+  if (points.length + steps && !confirm('Replace the current track with the demo?')) return;
+  clearTrack();
+  const t0 = Date.now() - 240 * 12000;
+  for (let i = 0; i < 240; i++) {
+    const lap = (i % 120) / 120;                       // two 150 m repeats
+    points.push({
+      lat: -33.9575 + i * 12 / 111320, lon: 18.4046,   // a real hill, and nowhere near a national LiDAR box
+      acc: 6, speed: 1.4, t: t0 + i * 12000,
+      ele: 60 + 150 * (lap < 0.5 ? lap * 2 : (1 - lap) * 2),
+    });
+  }
+  provider = 'terrarium';
+  render();
+  setStatus('demo track');
+  log('demo track loaded — 2 x 150 m. Not a live reading.');
 };
 
 const download = (name, text, type) => {
@@ -340,7 +451,9 @@ $('gpx').onclick = () => download('altitrack.gpx',
 $('json').onclick = () => {
   const s = summarize(points);
   download('altitrack.json', JSON.stringify({
-    total_elevation_gain: s.total_elevation_gain,
+    total_elevation_gain: +(s.total_elevation_gain + steps * RISER).toFixed(1),
+    terrain_elevation_gain: s.total_elevation_gain,
+    stairs: { steps, riser: RISER, gain: +(steps * RISER).toFixed(1) },
     elev_high: s.elev_high, elev_low: s.elev_low,
     distance: s.distance, elapsed_time: s.elapsed_time, moving_time: s.elapsed_time,
     start_date: points[0] ? new Date(points[0].t).toISOString() : null,

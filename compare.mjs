@@ -95,7 +95,11 @@ const gpxpy = (e) => {   // what the most-used GPX library does: 3-tap filter, N
 const ours = (e, w = 5, t = 10) => gainLoss(e, t, w).gain;
 
 // ---------- run ----------
-const sources = { 'mapzen (what the app uses)': () => openTopo('mapzen'), 'srtm30m': () => openTopo('srtm30m'), 'eudem25m': () => openTopo('eudem25m') };
+// mapzen, srtm30m and aster30m are global; eudem25m is Europe only and would
+// just fail elsewhere, so it is offered only where it has data.
+const inEurope = coords.every(([la, lo]) => la > 34 && la < 72 && lo > -25 && lo < 45);
+const sources = { 'mapzen (what the app uses)': () => openTopo('mapzen'), 'srtm30m': () => openTopo('srtm30m'), 'aster30m': () => openTopo('aster30m') };
+if (inEurope) sources['eudem25m'] = () => openTopo('eudem25m');
 if (inSwitzerland) sources['swisstopo LiDAR 0.5m'] = swisstopo;
 if (inSpain) sources['IGN MDT 5m LiDAR'] = ign;
 if (deviceEle) sources['phone GPS altitude'] = () => deviceEle;
