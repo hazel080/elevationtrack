@@ -71,6 +71,15 @@
     font-size: 20px; font-weight: 400; font-variant-numeric: tabular-nums;
   }
 
+  .cell input {
+    display: block; width: 100%; margin-top: calc(var(--u) / 2);
+    padding: 0; border: 0; background: none; color: var(--fg);
+    font: 400 20px/1.5 "Helvetica Neue", Helvetica, Inter, system-ui, sans-serif;
+    border-radius: 0; -webkit-appearance: none;
+  }
+  .cell input::placeholder { color: var(--dim); }
+  .cell input:focus { outline: none; box-shadow: 0 1px 0 var(--fg); }
+
   button {
     width: 100%; padding: calc(var(--u) * 2); margin-bottom: var(--u);
     border: 1px solid var(--fg); border-radius: 0;
@@ -105,11 +114,17 @@
   <div class="cell"><i>Status</i><b id="status">idle</b></div>
 </div>
 
+<div class="grid">
+  <div class="cell"><i>Route name</i><input id="label" placeholder="untitled" autocomplete="off"></div>
+  <div class="cell"><i>Surveyed gain</i><input id="truth" inputmode="decimal" placeholder="m, if known" autocomplete="off"></div>
+</div>
+
 <button id="toggle" class="go">Start</button>
 <button id="stairsBtn">Stairs — off</button>
+<button id="send">Send recording…</button>
 <div class="row">
-  <button id="gpx">Export GPX</button>
-  <button id="json">Export JSON</button>
+  <button id="gpx">Save GPX</button>
+  <button id="json">Save JSON</button>
 </div>
 <div class="row">
   <button id="demo">Demo track</button>
@@ -119,7 +134,7 @@
 
 
 <script type="module">
-import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor, lockProvider, wgs84ToLv95, segmentSamples, stairCounter, RISER } from './altitude.js';
+import { decodeTerrarium, toGlobalPixel, sampleBilinear, summarize, shouldAccept, hasSettled, providerFor, lockProvider, wgs84ToLv95, segmentSamples, stairCounter, sessionRecord, RISER } from './altitude.js';
 
 const Z = 13;                 // ~13 m/px at 47°N — finer than SRTM's real 30 m
 
@@ -239,6 +254,20 @@ async function elevationAt(lat, lon) {
 // ---- track state ----
 let points = store.get('altitrack', []);
 let steps = store.get('altitrack.steps', 0);   // stair steps climbed, booked at RISER each
+// Every fix the receiver produced, gated or not, with the reason it was gated.
+// The accepted track alone can only be believed; this is what lets a number be
+// re-derived and the gate constants re-tuned without walking the route again.
+let fixes = store.get('altitrack.fixes', []);
+const FIX_CAP = 20000;                         // ~5.5 h at 1 Hz, well inside the storage quota
+let capped = false;
+function logFix(f, verdict) {
+  if (fixes.length >= FIX_CAP) {
+    if (!capped) { capped = true; log(`raw fix log full at ${FIX_CAP} — the track keeps recording`); }
+    return;
+  }
+  fixes.push({ t: f.t, lat: +f.lat.toFixed(6), lon: +f.lon.toFixed(6),
+    acc: +f.acc.toFixed(1), speed: f.speed == null || f.speed < 0 ? null : +f.speed.toFixed(2), verdict });
+}
 let watchId = null, wakeLock = null, timer = null;
 let settling = [];            // fixes held until GPS agrees with itself
 let settled = false;          // reset on every Start: a resumed track cold-starts too
@@ -262,6 +291,9 @@ function render() {
   }
   store.set('altitrack', points);
   store.set('altitrack.steps', steps);
+  store.set('altitrack.fixes', fixes);
+  store.set('altitrack.label', $('label').value);
+  store.set('altitrack.truth', $('truth').value);
 }
 
 const setStatus = (t) => { $('status').textContent = t; };
@@ -275,15 +307,16 @@ async function onFix(pos) {
   //    metres out. Hold them until consecutive fixes agree, or the jump to the
   //    first real satellite fix gets booked as a climb.
   if (!settled) {
-    if (acc > 20) { setStatus(`waiting for GPS (${Math.round(acc)} m)`); return; }
+    if (acc > 20) { logFix(fix, 'accuracy'); setStatus(`waiting for GPS (${Math.round(acc)} m)`); return; }
     settling.push(fix);
-    if (!hasSettled(settling)) { setStatus(`settling ${settling.length}/3`); return; }
+    if (!hasSettled(settling)) { logFix(fix, 'settling'); setStatus(`settling ${settling.length}/3`); return; }
     settling = []; settled = true;
   }
 
   // 2. Gate every fix before it can touch the elevation math.
   const verdict = shouldAccept(points.at(-1), fix);
   if (verdict !== true) {
+    logFix(fix, verdict);
     rejected++;
     setStatus(verdict === 'stationary' ? 'still' : verdict === 'accuracy' ? 'poor GPS' : 'bad fix');
     return;
@@ -292,11 +325,11 @@ async function onFix(pos) {
   // Lookups are async (80-700 ms). Two in flight would be gated against the
   // same last point and could land out of time order; drop this fix instead —
   // the next one is gated from the last ACCEPTED point, so nothing is lost.
-  if (lookup) return;
+  if (lookup) { logFix(fix, 'lookup busy'); return; }
   lookup = true;
   try {
     const ele = await elevationAt(lat, lon);
-    if (!Number.isFinite(ele)) { setStatus('no terrain data'); return; }
+    if (!Number.isFinite(ele)) { logFix(fix, 'no terrain data'); setStatus('no terrain data'); return; }
     // Scan the terrain between the last point and this one: the summit of a
     // climb almost always falls between two fixes. Tile lookups are free; the
     // national services cost one request per sample, so they get a coarser step.
@@ -307,10 +340,11 @@ async function onFix(pos) {
       const r = await Promise.allSettled(segmentSamples(last, fix, step).map(p => elevationAt(p.lat, p.lon)));
       for (const x of r) if (x.status === 'fulfilled' && Number.isFinite(x.value)) { hi = Math.max(hi ?? -Infinity, x.value); lo = Math.min(lo ?? Infinity, x.value); }
     }
+    logFix(fix, 'accepted');
     points.push({ ...fix, ele, hi, lo, devEle });
     setStatus('moving');
     render();
-  } catch (e) { setStatus('terrain lookup failed'); log('terrain error: ' + e.message); }
+  } catch (e) { logFix(fix, 'terrain lookup failed'); setStatus('terrain lookup failed'); log('terrain error: ' + e.message); }
   finally { lookup = false; }
 }
 
@@ -407,6 +441,7 @@ $('toggle').onclick = () => {
 };
 function clearTrack() {
   points = []; settling = []; rejected = 0; provider = null; steps = 0; stairs.reset();
+  fixes = []; capped = false;
   $('ele').textContent = '–'; $('acc').textContent = '–';
   $('src').textContent = 'terrain model';
   render();
@@ -437,36 +472,61 @@ $('demo').onclick = () => {
   log('demo track loaded — 2 x 150 m. Not a live reading.');
 };
 
-const download = (name, text, type) => {
+const download = (name, body, type) => {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.href = URL.createObjectURL(body instanceof Blob ? body : new Blob([body], { type }));
   a.download = name; a.click();
 };
-$('gpx').onclick = () => download('altitrack.gpx',
-  `<?xml version="1.0"?>\n<gpx version="1.1" creator="altitrack" xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>\n` +
+const gpx = () =>
+  `<?xml version="1.0"?>\n<gpx version="1.1" creator="altitrack" xmlns="http://www.topografix.com/GPX/1/1">` +
+  `<trk><name>${($('label').value.trim() || 'Altitrack').replace(/[<&]/g, '')}</name><trkseg>\n` +
   points.map(p => `<trkpt lat="${p.lat}" lon="${p.lon}"><ele>${p.ele.toFixed(1)}</ele><time>${new Date(p.t).toISOString()}</time></trkpt>`).join('\n') +
-  `\n</trkseg></trk></gpx>`, 'application/gpx+xml');
+  `\n</trkseg></trk></gpx>`;
+$('gpx').onclick = () => download(stem() + '.gpx', gpx(), 'application/gpx+xml');
 
-// Strava-activity-shaped payload: same field names, so it drops into an existing pipeline.
-$('json').onclick = () => {
+const record = () => sessionRecord({
+  points, fixes, steps,
+  provider: provider ?? `terrarium-dem-z${Z}`,
+  label: $('label').value.trim(),
+  truth: Number($('truth').value) || null,
+  device: navigator.userAgent,
+});
+// A recording is named after the route and the day, because these arrive by
+// email in batches and "altitrack.json" twelve times over is not a dataset.
+const stem = () => [
+  ($('label').value.trim() || 'altitrack').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40),
+  new Date(points[0]?.t ?? Date.now()).toISOString().slice(0, 10),
+].join('_');
+
+$('json').onclick = () => download(stem() + '.json', JSON.stringify(record(), null, 2), 'application/json');
+
+// Getting the file OFF the phone is the part that decides whether a test
+// actually comes back. The share sheet is the native answer on both platforms —
+// Mail, AirDrop, WhatsApp, Files, whatever the tester already uses — and it
+// takes real files. Where it is missing or refuses files (desktop, some
+// in-app browsers), saving both is the fallback.
+$('send').onclick = async () => {
+  if (!points.length && !steps) return log('nothing recorded yet');
+  const files = [
+    new File([JSON.stringify(record(), null, 2)], stem() + '.json', { type: 'application/json' }),
+    new File([gpx()], stem() + '.gpx', { type: 'application/gpx+xml' }),
+  ];
   const s = summarize(points);
-  download('altitrack.json', JSON.stringify({
-    total_elevation_gain: +(s.total_elevation_gain + steps * RISER).toFixed(1),
-    terrain_elevation_gain: s.total_elevation_gain,
-    stairs: { steps, riser: RISER, gain: +(steps * RISER).toFixed(1) },
-    elev_high: s.elev_high, elev_low: s.elev_low,
-    distance: s.distance, elapsed_time: s.elapsed_time, moving_time: s.elapsed_time,
-    start_date: points[0] ? new Date(points[0].t).toISOString() : null,
-    elevation_source: provider ?? `terrarium-dem-z${Z}`,
-    streams: {
-      latlng: points.map(p => [p.lat, p.lon]),
-      altitude: s.smoothed.map(e => +e.toFixed(1)),
-      device_altitude: points.map(p => p.devEle == null ? null : +p.devEle.toFixed(1)),
-      time: points.map(p => Math.round((p.t - points[0].t) / 1000)),
-    },
-  }, null, 2), 'application/json');
+  const text = `${$('label').value.trim() || 'Altitrack recording'}\n`
+    + `${Math.round(s.total_elevation_gain + steps * RISER)} m climbed, ${(s.distance / 1000).toFixed(2)} km, `
+    + `${points.length} points, source ${provider ?? 'terrarium'}`;
+  try {
+    if (navigator.canShare?.({ files })) return await navigator.share({ files, title: files[0].name, text });
+  } catch (e) {
+    if (e.name === 'AbortError') return;      // the tester closed the sheet; not a failure
+    log('share failed: ' + e.message);
+  }
+  for (const f of files) download(f.name, f, f.type);
+  log('no share sheet here — both files saved instead');
 };
 
+$('label').value = store.get('altitrack.label', '') || '';
+$('truth').value = store.get('altitrack.truth', '') || '';
 render();
 log('ready — DEM zoom ' + Z);
 navigator.permissions?.query({ name: 'geolocation' })

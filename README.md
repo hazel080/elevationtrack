@@ -42,9 +42,84 @@ any other app:
 the tab in front. Backgrounded browsers get their GPS throttled or suspended by
 both operating systems; that is a platform limit, not a setting.
 
-**Exports.** *Export GPX* gives a file Strava, Garmin Connect and Komoot import
-directly. *Export JSON* gives a Strava-activity-shaped payload — same field
-names, so it drops into an existing pipeline — plus the raw streams.
+**Exports.** *Send recording…* opens the phone's own share sheet with both
+files attached — Mail, AirDrop, WhatsApp, Files, whatever the tester already
+uses. *Save GPX* gives a file Strava, Garmin Connect and Komoot import directly;
+*Save JSON* gives the full session record (below).
+
+## Testing it in the field
+
+The point of a test walk is a file that someone else can check. Fill in the
+**route name** and, if you know it, the **surveyed gain**, walk the route, then
+press **Send recording…** and mail it to whoever is collecting them. The file
+names itself after the route and the date, because a mailbox of twelve
+`altitrack.json` files is not a dataset.
+
+### What the recording contains
+
+The JSON is a complete session record — the evidence, not just the answer:
+
+| | |
+|---|---|
+| `label`, `surveyed_gain` | what was walked, and what it truly climbs, so the file scores itself |
+| `total_elevation_gain` | terrain + stairs, and each half separately |
+| `track` | every accepted point with the height the terrain model returned, plus `hi`/`lo` from the between-fix scan |
+| `gps_fixes` | **every fix the receiver produced**, accepted or not, each with the reason the gate gave it |
+| `device` | the browser and phone, because the GPS chip is half the answer |
+| `streams` | Strava-activity-shaped, so it drops into an existing pipeline |
+
+`gps_fixes` is the one that earns its place. A summary can only be believed or
+disbelieved; the raw receiver trace lets a number that looks wrong be
+re-derived, and the gate constants re-tuned, without anyone walking the route
+again.
+
+### Scoring the files that come back
+
+    node compare.mjs recording.json
+
+Re-derives the climb from several independent terrain datasets and algorithms.
+It reads `surveyed_gain` out of the file, so no flag is needed, and it prints
+the tally of gate verdicts — a walk that was 80% `stationary` rejections tells
+you more than the gain figure does.
+
+### Comparing against Apple Health
+
+    node health.mjs recording.json export.zip
+
+Every iPhone since the 6 has a barometer, and HealthKit's flights-climbed comes
+from it, fused with the accelerometer so lifts and escalators are filtered out.
+**A browser cannot reach that sensor** — no platform exposes pressure to a web
+page — which is exactly what makes it an independent reference, and the only one
+that exists for stairs, where terrain models have nothing to say at all.
+
+The tester exports it themselves: *Health app → profile picture → Export All
+Health Data* → `export.zip`. Point `health.mjs` at it and the recording's own
+time window is scored against the barometer:
+
+    altitrack terrain       156.3 m
+    altitrack stairs          7.1 m   (42 steps x 0.17 m)
+    Apple Health flights        7  = 21.0 m   (Luca's iPhone)
+    Apple Health workout    162.0 m   (Fitness, iPhone)
+      terrain vs workout     -3.5%
+      stairs  vs flights    -66.2%
+
+Read it as a reference, never as truth: **any app can write anything into
+HealthKit**, so `health.mjs` prints the source of every number; a "flight" is a
+flat 3 m by convention rather than a measurement of the staircase you climbed;
+and a barometer drifts with the weather over a long day.
+
+**Why this is a file and not a login.** HealthKit and Health Connect are
+native-only — device-side APIs behind an app entitlement, with no OAuth, no
+webhook and no web API of any kind. A page in a browser cannot read either one,
+and no third-party aggregator changes that; they all hand you an SDK to embed
+under the same on-device constraint. Live Health sync needs the native shell
+that would also unlock the barometer, which is the same item already sitting in
+[Not done yet](#not-done-yet).
+
+*Android:* Health Connect has the same shape (`FloorsClimbedRecord`,
+`ElevationGainedRecord`) but no stable file export to point a script at — and
+most Android handsets have no barometer at all, so its floor count is usually
+derived from the same accelerometer this app already reads. Compare on iOS.
 
 ## Where it works
 
@@ -129,6 +204,14 @@ There is no backend and no account. The track lives in the phone's
 `localStorage` and nowhere else. The only outbound requests are terrain
 lookups — a coordinate goes out, a height comes back. Nothing is uploaded, and
 the exports are files the phone hands you.
+
+Sending a recording is therefore a deliberate act, and worth knowing what it
+contains: the full route, every raw GPS fix, and the browser's user-agent string
+(which names the phone model). That is precisely what makes a test result
+diagnosable, and it is location data about a person — treat a folder of them
+accordingly, and collect them under the tester's consent rather than an
+employer's. `health.mjs` runs entirely on your own machine; a Health export is
+never uploaded anywhere by this project.
 
 ## How it works
 
@@ -261,7 +344,8 @@ hand, multiply by the measured riser, and compare.
 | `index.html`  | The tracker UI. |
 | `test.mjs`    | Validation suite. |
 | `serve.sh`    | Local server + HTTPS tunnel. |
-| `compare.mjs` | Re-derives a track's gain from 4 terrain datasets and 3 algorithms. |
+| `compare.mjs` | Re-derives a track's gain from several terrain datasets and 3 algorithms. |
+| `health.mjs`  | Scores a recording against Apple Health's barometric flights and workout ascent. |
 | `manifest.webmanifest`, `icon-*.png` | Home-screen install. No service worker: every fix needs a live terrain lookup, so an offline shell would only cache a screen that cannot record anything. |
 
 ## Calibration

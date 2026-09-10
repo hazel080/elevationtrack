@@ -316,4 +316,66 @@ console.log('all checks passed');
   console.log(`  stairs: ${climb.steps}/40 steps counted = +${climb.gain.toFixed(1)} m; still/jolt/shake all 0`);
 }
 
+// The session record is the artifact a tester mails back, so it has to carry
+// enough to re-derive the number, and compare.mjs has to be able to read it.
+{
+  const { sessionRecord } = await import('./altitude.js');
+  const pts = Array.from({ length: 30 }, (_, i) => ({
+    lat: 41.37 + i * 20 / 111320, lon: 2.15, t: 1e12 + i * 10000,
+    acc: 6, speed: 1.4, ele: 20 + i * 5, hi: 20 + i * 5 + 1, lo: 20 + i * 5 - 1, devEle: null,
+  }));
+  const fixes = [{ t: 1e12, lat: 41.37, lon: 2.15, acc: 6, speed: 1.4, verdict: 'accepted' },
+                 { t: 1e12 + 1000, lat: 41.37, lon: 2.15, acc: 45, speed: 0, verdict: 'accuracy' }];
+  const r = sessionRecord({ points: pts, fixes, steps: 40, provider: 'ign', label: 'Montjuïc', truth: 157.6, device: 'iPhone' });
+
+  assert.strictEqual(r.format, 'altitrack/1');
+  assert.strictEqual(r.surveyed_gain, 157.6);            // compare.mjs scores against this with no flag
+  assert.strictEqual(r.label, 'Montjuïc');
+  assert.strictEqual(r.track.length, 30);
+  assert.strictEqual(r.gps_fixes.length, 2);             // the rejected fix survives, with its reason
+  assert.strictEqual(r.stairs.steps, 40);
+  // the headline is terrain + stairs, and both halves stay separately visible
+  assert.ok(Math.abs(r.total_elevation_gain - (r.terrain_elevation_gain + r.stairs.gain)) < 0.05,
+    `${r.total_elevation_gain} != ${r.terrain_elevation_gain} + ${r.stairs.gain}`);
+  // the shape compare.mjs reads
+  assert.strictEqual(r.streams.latlng.length, 30);
+  assert.ok(r.streams.latlng.every(([a, b]) => Number.isFinite(a) && Number.isFinite(b)));
+  // and it must survive the trip through a file
+  const back = JSON.parse(JSON.stringify(r));
+  assert.deepStrictEqual(back.streams.latlng[0], [pts[0].lat, pts[0].lon]);
+  console.log(`  session record: ${r.track.length} pts + ${r.gps_fixes.length} raw fixes, ${r.total_elevation_gain} m, truth ${r.surveyed_gain}`);
+}
+
+// Apple Health export parsing. The fixture is shaped exactly like a real
+// export.xml: one line per Record, Workout ascent arriving as a child entry.
+{
+  const { scanHealth, appleDate } = await import('./health.mjs');
+  const t0 = +new Date('2026-09-10T09:00:00+02:00'), t1 = t0 + 30 * 60000;
+  const lines = `
+ <Record type="HKQuantityTypeIdentifierFlightsClimbed" sourceName="Luca's iPhone" startDate="2026-09-10 09:05:00 +0200" endDate="2026-09-10 09:06:00 +0200" value="4"/>
+ <Record type="HKQuantityTypeIdentifierFlightsClimbed" sourceName="Luca's iPhone" startDate="2026-09-10 09:12:00 +0200" endDate="2026-09-10 09:13:00 +0200" value="3"/>
+ <Record type="HKQuantityTypeIdentifierFlightsClimbed" sourceName="Luca's iPhone" startDate="2026-09-10 11:00:00 +0200" endDate="2026-09-10 11:01:00 +0200" value="9"/>
+ <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Luca's iPhone" startDate="2026-09-10 09:05:00 +0200" endDate="2026-09-10 09:06:00 +0200" value="820"/>
+ <Record type="HKQuantityTypeIdentifierDistanceWalkingRunning" sourceName="Luca's iPhone" startDate="2026-09-10 09:05:00 +0200" endDate="2026-09-10 09:20:00 +0200" value="1.4" unit="km"/>
+ <Workout workoutActivityType="HKWorkoutActivityTypeHiking" duration="28" sourceName="Fitness" device="&lt;&lt;HKDevice: 0x1&gt;, name:iPhone&gt;" startDate="2026-09-10 09:01:00 +0200" endDate="2026-09-10 09:29:00 +0200">
+  <MetadataEntry key="HKMetadataKeyElevationAscended" value="162 m"/>
+ </Workout>
+ <Workout workoutActivityType="HKWorkoutActivityTypeCycling" duration="40" sourceName="Fitness" startDate="2026-09-11 09:01:00 +0200" endDate="2026-09-11 09:41:00 +0200">
+  <MetadataEntry key="HKMetadataKeyElevationAscended" value="900 m"/>
+ </Workout>
+`.trim().split('\n');
+
+  const h = scanHealth(lines, t0, t1);
+  assert.strictEqual(h.flights, 7, `flights ${h.flights} — the 11:00 record is outside the window`);
+  assert.strictEqual(h.steps, 820);
+  assert.ok(Math.abs(h.distance - 1400) < 1, `distance ${h.distance} m — the export is in km`);
+  assert.strictEqual(h.workouts.length, 1, 'the next day\'s ride must not be picked up');
+  assert.strictEqual(h.workouts[0].ascent, 162);
+  assert.strictEqual(h.workouts[0].type, 'Hiking');
+  assert.deepStrictEqual(h.sources, ["Luca's iPhone"]);
+  // the timezone offset in Apple's format has to survive parsing
+  assert.strictEqual(+appleDate('2026-09-10 09:05:00 +0200'), +new Date('2026-09-10T07:05:00Z'));
+  console.log(`  apple health: ${h.flights} flights = ${h.flights * 3} m, workout ascent ${h.workouts[0].ascent} m, window respected`);
+}
+
 console.log('gate checks passed');

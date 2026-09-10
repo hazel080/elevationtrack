@@ -13,20 +13,31 @@ import { gainLoss, providerFor, wgs84ToLv95 } from './altitude.js';
 
 const file = process.argv[2];
 const truthArg = process.argv.indexOf('--truth');
-const TRUTH = truthArg > -1 ? Number(process.argv[truthArg + 1]) : null;
+let TRUTH = truthArg > -1 ? Number(process.argv[truthArg + 1]) : null;
 if (!file) { console.error('usage: node compare.mjs <track.json|track.gpx> [--truth metres]'); process.exit(1); }
 
 // ---------- load ----------
 const text = readFileSync(file, 'utf8');
-let coords, deviceEle = null;
+let coords, deviceEle = null, recorded = null;
 if (file.endsWith('.gpx')) {
   coords = [...text.matchAll(/<trkpt[^>]*lat="([-\d.]+)"[^>]*lon="([-\d.]+)"/g)].map(m => [+m[1], +m[2]]);
   const eles = [...text.matchAll(/<ele>([-\d.]+)<\/ele>/g)].map(m => +m[1]);
   if (eles.length === coords.length) deviceEle = eles;
 } else {
   const j = JSON.parse(text);
-  coords = j.streams?.latlng ?? j.map(p => [p.lat, p.lon]);
+  coords = j.streams?.latlng ?? j.track?.map(p => [p.lat, p.lon]) ?? j.map(p => [p.lat, p.lon]);
   deviceEle = j.streams?.device_altitude?.every(v => v != null) ? j.streams.device_altitude : null;
+  recorded = j.total_elevation_gain ?? null;
+  // A recording carries its own surveyed truth, so a file that arrives by email
+  // scores itself without anyone having to remember the route.
+  if (TRUTH == null && Number.isFinite(j.surveyed_gain)) TRUTH = j.surveyed_gain;
+  if (j.label) console.log(`route: ${j.label}`);
+  if (j.device) console.log(`device: ${j.device.slice(0, 90)}`);
+  if (j.gps_fixes?.length) {
+    const tally = {};
+    for (const f of j.gps_fixes) tally[f.verdict] = (tally[f.verdict] ?? 0) + 1;
+    console.log('gate: ' + Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(', '));
+  }
 }
 if (!coords?.length) { console.error('no points found in ' + file); process.exit(1); }
 console.log(`${coords.length} track points from ${file}`);
@@ -116,6 +127,7 @@ const num = (v) => (v == null ? '–' : v.toFixed(0));
 console.log('\n' + pad('terrain source', 28) + '  ours'.padStart(8) + ' gpxpy'.padStart(8) + ' raw sum'.padStart(8));
 console.log('-'.repeat(56));
 for (const r of rows) console.log(pad(r.name, 28) + num(r.ours).padStart(8) + num(r.noThresh).padStart(8) + num(r.rawSum).padStart(8));
+if (recorded != null) console.log(`\nthe app recorded ${recorded} m in the field (its own terrain lookups, live)`);
 console.log('\nours    = smoothing + 10 m threshold (this app)');
 console.log('gpxpy   = 3-tap filter, no threshold (the popular GPX library)');
 console.log('raw sum = every positive delta, no filtering at all');

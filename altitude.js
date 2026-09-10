@@ -275,6 +275,58 @@ export function haversine(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+/**
+ * The file a tester sends back. One self-describing record of a walk: what was
+ * walked, what the app decided, and the evidence for both.
+ *
+ * The evidence is the point. A summary alone can only be believed or
+ * disbelieved; this carries every accepted point with the height the terrain
+ * model returned for it, and every fix the receiver ever produced with the
+ * verdict the gate gave it. So a number that looks wrong can be re-derived from
+ * independent terrain data (compare.mjs), and the gate constants can be re-tuned
+ * against the real receiver trace, without anyone walking the route again.
+ *
+ * `label` and `surveyed_gain` are what make a mailbox full of these useful:
+ * a file that does not say what route it is, or what the route truly climbs,
+ * cannot be scored against anything.
+ */
+export function sessionRecord({ points = [], fixes = [], steps = 0, provider = null, label = '', truth = null, device = '' } = {}) {
+  const s = summarize(points);
+  const stairs = +(steps * RISER).toFixed(1);
+  return {
+    format: 'altitrack/1',
+    label: label || null,
+    surveyed_gain: Number.isFinite(truth) ? truth : null,
+    device: device || null,
+    elevation_source: provider,
+
+    total_elevation_gain: +(s.total_elevation_gain + stairs).toFixed(1),
+    terrain_elevation_gain: s.total_elevation_gain,
+    stairs: { steps, riser: RISER, gain: stairs },
+    total_elevation_loss: s.total_elevation_loss,
+    elev_high: s.elev_high, elev_low: s.elev_low,
+    distance: s.distance,
+    elapsed_time: s.elapsed_time, moving_time: s.elapsed_time,
+    start_date: points[0] ? new Date(points[0].t).toISOString() : null,
+
+    // the accepted track, with what the terrain model actually returned
+    track: points.map(p => ({
+      lat: p.lat, lon: p.lon, t: p.t, acc: p.acc, speed: p.speed ?? null,
+      ele: p.ele, hi: p.hi ?? null, lo: p.lo ?? null, device_altitude: p.devEle ?? null,
+    })),
+    // every fix the receiver produced, accepted or not, with the gate's reason
+    gps_fixes: fixes,
+
+    // Strava-activity-shaped, so this drops into an existing pipeline unchanged
+    streams: {
+      latlng: points.map(p => [p.lat, p.lon]),
+      altitude: s.smoothed.map(e => +e.toFixed(1)),
+      device_altitude: points.map(p => p.devEle == null ? null : +p.devEle.toFixed(1)),
+      time: points.map(p => Math.round((p.t - (points[0]?.t ?? 0)) / 1000)),
+    },
+  };
+}
+
 /** Full pipeline over a track of {lat,lon,t,ele}. */
 export function summarize(points, { threshold = 10, window = 5 } = {}) {
   points = dropStationary(points);
